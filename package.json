@@ -1,0 +1,29 @@
+{
+  "name": "acg",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@prisma/client": "^6.19.3",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.12.1",
+    "fastify-raw-body": "^6.0.1",
+    "pino": "^10.3.1",
+    "prisma": "^6.19.3",
+    "razorpay": "^2.9.8",
+    "zod": "^4.5.4"
+  }
+}

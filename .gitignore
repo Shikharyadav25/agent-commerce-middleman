@@ -1,0 +1,20 @@
+# Environment Variables
+.env
+.env*.local
+.env.production
+
+# Dependencies
+node_modules/
+
+# Build and Framework Outputs
+.next/
+dist/
+build/
+.turbo/
+
+# OS and Editor
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/

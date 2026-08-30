@@ -1,0 +1,121 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Merchant {
+  id            String   @id @default(cuid())
+  name          String
+  razorpayKeyId String
+  sellingPolicy Json     // catalog rules, refund rules — stored as JSON for demo speed
+  createdAt     DateTime @default(now())
+
+  products         Product[]
+  mandateTemplates MandateTemplate[]
+}
+
+model Product {
+  id         String   @id @default(cuid())
+  merchantId String
+  merchant   Merchant @relation(fields: [merchantId], references: [id])
+  sku        String
+  name       String
+  price      Int      // in paise (smallest currency unit) to avoid float rounding
+  currency   String   @default("INR")
+  stock      Int
+  category   String
+  pairsWith  String[] // array of SKUs
+  tags       String[]
+
+  @@unique([merchantId, sku])
+}
+
+model Agent {
+  id         String   @id @default(cuid())
+  name       String
+  apiKeyHash String   @unique
+  revoked    Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  mandates Mandate[]
+}
+
+model MandateTemplate {
+  id                  String   @id @default(cuid())
+  merchantId          String
+  merchant            Merchant @relation(fields: [merchantId], references: [id])
+  maxPerTransaction    Int      // paise
+  dailyCap             Int      // paise
+  autoApproveThreshold Int      // paise
+  allowedCategories    String[]
+}
+
+model Mandate {
+  id           String   @id @default(cuid())
+  agentId      String
+  agent        Agent    @relation(fields: [agentId], references: [id])
+  merchantId   String
+  signedPayload String  // HMAC-signed JSON blob
+  active       Boolean  @default(true)
+  maxPerTransaction    Int
+  dailyCap             Int
+  autoApproveThreshold Int
+  allowedCategories    String[]
+  createdAt    DateTime @default(now())
+
+  transactions Transaction[]
+}
+
+model Quote {
+  id        String   @id @default(cuid())
+  items     Json     // [{sku, qty, unitPrice}]
+  total     Int       // paise
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  transaction Transaction?
+}
+
+model Transaction {
+  id              String   @id @default(cuid())
+  correlationId   String   @unique @default(cuid())
+  mandateId       String
+  mandate         Mandate  @relation(fields: [mandateId], references: [id])
+  quoteId         String   @unique
+  quote           Quote    @relation(fields: [quoteId], references: [id])
+  state           String   // created | policy_checked | gated | approved | order_created | paid | failed
+  razorpayOrderId   String?  @unique
+  razorpayPaymentId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  auditLogs        AuditLogRow[]
+  pendingApproval  PendingApproval?
+}
+
+model AuditLogRow {
+  id            String   @id @default(cuid())
+  correlationId String
+  transactionId String?
+  transaction   Transaction? @relation(fields: [transactionId], references: [id])
+  step          String   // e.g. "policy_check", "gate_decision", "webhook_received"
+  decision      String   // "allow" | "deny" | "pending" | "info"
+  reason        String   // plain-English explanation
+  ruleId        String?
+  actor         String   // "system" | "human:<user_id>" | "agent:<agent_id>"
+  createdAt     DateTime @default(now())
+}
+
+model PendingApproval {
+  id            String    @id @default(cuid())
+  transactionId String    @unique
+  transaction   Transaction @relation(fields: [transactionId], references: [id])
+  expiresAt     DateTime
+  decidedBy     String?
+  decision      String?   // "approved" | "declined" | null (still pending)
+  createdAt     DateTime  @default(now())
+}
