@@ -1,12 +1,17 @@
-# Agent Commerce Gateway (ACG)
+# Agent Commerce Middleman (ACG / ACM)
 
-Deterministic Guardrails, Policy Engine, and Razorpay Payment Gateway for Autonomous AI Agents.
+> **Deterministic Guardrails, Policy Engine, and Razorpay Payment Gateway for Autonomous AI Agents.**
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node.js Version](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg)](https://nodejs.org)
+[![Prisma ORM](https://img.shields.io/badge/Prisma-6.x-1B222D.svg)](https://www.prisma.io/)
+[![Fastify](https://img.shields.io/badge/Fastify-5.x-black.svg)](https://fastify.dev/)
 
 ---
 
 ## Overview
 
-**Agent Commerce Gateway (ACG)** acts as the secure intermediary between autonomous AI agents and payment processors (Razorpay). Rather than giving LLMs unchecked access to payment credentials or credit cards, ACG enforces zero-trust, deterministic financial policies, spending caps, cryptographic webhook verification, and human-in-the-loop approval gates.
+**Agent Commerce Middleman** acts as a secure, zero-trust intermediary layer between autonomous AI agents and payment processors (Razorpay). Rather than giving LLMs unchecked access to payment credentials or credit cards, the gateway enforces deterministic financial boundaries, strict spending caps, cryptographic webhook verification, and human-in-the-loop approval gates.
 
 ```mermaid
 flowchart LR
@@ -22,10 +27,10 @@ flowchart LR
 
 ## Core Capabilities
 
-- **Zero-LLM Policy Engine**: Pure deterministic JavaScript rules for financial boundaries — per-transaction caps, daily cumulative spend limits, allowed merchant categories, and new merchant gates.
+- **Zero-LLM Deterministic Policy Engine**: Pure deterministic JavaScript rules for financial boundaries — per-transaction caps, daily cumulative spend limits, allowed merchant categories, and first-time merchant gates.
 - **Razorpay Integration**: Idempotent order creation, payment link generation, payment verification, and refund management.
 - **Secure Webhook Pipeline**: Raw body buffer capture and constant-time HMAC-SHA256 signature verification for `payment.captured`, `order.paid`, and `payment.failed`.
-- **Immutable Audit Trail**: Every decision, policy pass/fail, and webhook event is recorded in PostgreSQL with correlation IDs and clear explanations.
+- **Immutable Audit Trail**: Every decision, policy pass/fail, and webhook event is recorded in PostgreSQL with correlation IDs and human-readable explanations.
 - **Model Context Protocol (MCP)**: Native tool integration for Claude Desktop and agent frameworks (`browse_catalog`, `get_quote`, `initiate_payment`, `check_status`).
 
 ---
@@ -33,7 +38,7 @@ flowchart LR
 ## Architecture & Monorepo Structure
 
 ```text
-acg/
+agent-commerce-middleman/
 ├── apps/
 │   ├── api/                 # Fastify REST API & Razorpay Webhook listener
 │   │   ├── src/
@@ -61,13 +66,19 @@ acg/
 
 ## Quickstart Guide
 
-### 1. Prerequisites
+### 1. Clone the Repository
+```bash
+git clone https://github.com/Shikharyadav25/agent-commerce-middleman.git
+cd agent-commerce-middleman
+```
+
+### 2. Prerequisites
 - **Node.js**: v20+ or v22+ (`node -v`)
 - **Docker Desktop**: For running PostgreSQL (`docker --version`)
 - **Razorpay Account**: Test mode credentials from [Razorpay Dashboard](https://dashboard.razorpay.com/#/app/keys)
 
-### 2. Environment Configuration
-Copy `.env.example` to `.env` in the `acg` root:
+### 3. Environment Configuration
+Copy `.env.example` to `.env`:
 ```bash
 cp .env.example .env
 ```
@@ -80,7 +91,7 @@ DATABASE_URL=postgresql://acg:acg_dev_password@localhost:5433/acg
 PORT=3000
 ```
 
-### 3. Start Database & Run Migrations
+### 4. Start Database & Run Migrations
 Start the PostgreSQL container:
 ```bash
 docker compose up -d
@@ -92,18 +103,18 @@ cd packages/db
 npx prisma db push
 ```
 
-Seed initial merchant and product catalog data:
+Seed initial merchant, catalog, and agent mandate data:
 ```bash
 node prisma/seed.js
 ```
 
-### 4. Run Policy Engine Tests
+### 5. Run Policy Engine Tests
 Execute unit tests using the native Node.js test runner:
 ```bash
 node --test packages/policy-engine/src/rules.test.js
 ```
 
-### 5. Start the API Server
+### 6. Start the API Server
 ```bash
 node apps/api/src/index.js
 ```
@@ -113,7 +124,7 @@ curl http://localhost:3000/health
 # Response: {"status":"ok"}
 ```
 
-### 6. Public Webhook Tunnel (ngrok)
+### 7. Public Webhook Tunnel (ngrok)
 To allow Razorpay to deliver webhooks locally:
 ```bash
 ngrok http 3000
@@ -140,10 +151,10 @@ All policy checks are deterministic and explainable:
 
 ---
 
-## Security
+## Security & Best Practices
 
 - **Strict `.gitignore`**: Environment files (`.env`), credentials, and private keys are strictly excluded from version control.
-- **Constant-Time Verification**: Webhook signatures are compared using `crypto.timingSafeEqual` to guard against timing attacks.
+- **Constant-Time Verification**: Webhook signatures are compared using `crypto.timingSafeEqual` with buffer length validation to guard against timing attacks and buffer exceptions.
 - **Idempotency**: All payment transactions require idempotency keys / quote IDs to prevent duplicate charges.
 
 ---
