@@ -1,0 +1,14 @@
+{
+  "name": "@acg/policy-engine",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./rules": "./src/rules.js",
+    "./evaluate": "./src/evaluate.js"
+  },
+  "scripts": {
+    "test": "node --test src/rules.test.js"
+  }
+}

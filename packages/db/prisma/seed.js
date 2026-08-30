@@ -1,12 +1,30 @@
-import 'dotenv/config';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
+dotenv.config();
+
 const prisma = new PrismaClient();
 
 async function main() {
+  // Clean up in reverse relation order for clean re-seeding
+  await prisma.auditLogRow.deleteMany({});
+  await prisma.pendingApproval.deleteMany({});
+  await prisma.transaction.deleteMany({});
+  await prisma.quote.deleteMany({});
+  await prisma.mandate.deleteMany({});
+  await prisma.agent.deleteMany({});
+  await prisma.mandateTemplate.deleteMany({});
+  await prisma.product.deleteMany({});
+  await prisma.merchant.deleteMany({});
+
   const merchant = await prisma.merchant.create({
     data: {
       name: 'Demo Grocery Store',
-      razorpayKeyId: process.env.RAZORPAY_KEY_ID,
+      razorpayKeyId: process.env.RAZORPAY_KEY_ID || 'rzp_test_demo',
       sellingPolicy: { refundWindowDays: 7 },
     },
   });
