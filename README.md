@@ -1,4 +1,4 @@
-# Agent Commerce Middleman (ACG / ACM)
+# Razorpay Agent Commerce Middleman (ACG / ACM)
 
 > **Deterministic Guardrails, Policy Engine, and Razorpay Payment Gateway for Autonomous AI Agents.**
 
