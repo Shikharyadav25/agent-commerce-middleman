@@ -1,5 +1,5 @@
 {
-  "name": "@acg/policy-engine",
+  "name": "@acm/policy-engine",
   "version": "1.0.0",
   "type": "module",
   "main": "src/index.js",

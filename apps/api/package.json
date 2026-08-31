@@ -1,5 +1,5 @@
 {
-  "name": "@acg/api",
+  "name": "@acm/api",
   "version": "1.0.0",
   "type": "module",
   "main": "src/index.js",
@@ -7,5 +7,8 @@
     "dev": "node src/index.js",
     "start": "node src/index.js",
     "test:order": "node test-order.js"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.3.0"
   }
 }

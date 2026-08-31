@@ -87,7 +87,7 @@ Fill in your Razorpay Test Mode credentials in `.env`:
 RAZORPAY_KEY_ID=rzp_test_YourKeyId
 RAZORPAY_KEY_SECRET=YourKeySecret
 RAZORPAY_WEBHOOK_SECRET=YourWebhookSecret
-DATABASE_URL=postgresql://acg:acg_dev_password@localhost:5433/acg
+DATABASE_URL=postgresql://acm:acm_dev_password@localhost:5433/acm
 PORT=3000
 ```
 

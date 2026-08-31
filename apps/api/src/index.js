@@ -2,10 +2,17 @@ import Fastify from 'fastify';
 import 'dotenv/config';
 import crypto from 'crypto';
 import rawBody from 'fastify-raw-body';
+import cors from '@fastify/cors';
 import { PrismaClient } from '@prisma/client';
+import { createOrder, createPaymentLink } from './razorpay.js';
 
 const app = Fastify({ logger: true });
 const prisma = new PrismaClient();
+
+await app.register(cors, {
+  origin: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+});
 
 await app.register(rawBody, { field: 'rawBody', global: false, runFirst: true });
 
@@ -22,12 +29,207 @@ app.post('/v1/quotes', async (request) => {
   const products = await prisma.product.findMany({ where: { sku: { in: items.map(i => i.sku) } } });
   const total = items.reduce((sum, item) => {
     const product = products.find(p => p.sku === item.sku);
-    return sum + product.price * item.qty;
+    return sum + (product ? product.price * item.qty : 0);
   }, 0);
   const quote = await prisma.quote.create({
     data: { items, total, expiresAt: new Date(Date.now() + 10 * 60 * 1000) },
   });
   return quote;
+});
+
+// ---- Pending Approvals ----
+app.get('/v1/pending-approvals', async (request) => {
+  const { status } = request.query || {};
+  let where = {};
+  if (status === 'pending' || !status) {
+    where = { decision: null };
+  } else if (status === 'decided') {
+    where = { decision: { not: null } };
+  }
+
+  const approvals = await prisma.pendingApproval.findMany({
+    where,
+    include: {
+      transaction: {
+        include: {
+          quote: true,
+          mandate: {
+            include: {
+              agent: true,
+            },
+          },
+          auditLogs: {
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+  return approvals;
+});
+
+app.post('/v1/pending-approvals/:id/decide', async (request, reply) => {
+  const { id } = request.params;
+  const { decision, decidedBy = 'human:admin', reason } = request.body || {};
+
+  const normalizedDecision = String(decision || '').toLowerCase();
+  const isApproved = normalizedDecision === 'approve' || normalizedDecision === 'approved' || normalizedDecision === 'allow';
+  const isDeclined = normalizedDecision === 'decline' || normalizedDecision === 'declined' || normalizedDecision === 'deny' || normalizedDecision === 'reject' || normalizedDecision === 'rejected';
+
+  if (!isApproved && !isDeclined) {
+    return reply.code(400).send({ error: "Invalid decision. Must be 'approved' or 'declined'." });
+  }
+
+  // Find approval record either by pendingApproval.id or transactionId
+  const pending = await prisma.pendingApproval.findFirst({
+    where: {
+      OR: [{ id }, { transactionId: id }],
+    },
+    include: {
+      transaction: {
+        include: {
+          quote: true,
+          mandate: true,
+        },
+      },
+    },
+  });
+
+  if (!pending) {
+    return reply.code(404).send({ error: 'Pending approval record not found.' });
+  }
+
+  const newDecision = isApproved ? 'approved' : 'declined';
+  const newTxState = isApproved ? 'approved' : 'failed';
+
+  let razorpayOrderId = pending.transaction.razorpayOrderId;
+  let paymentLinkUrl = null;
+
+  if (isApproved && !razorpayOrderId) {
+    try {
+      const order = await createOrder({
+        quoteId: pending.transaction.quoteId,
+        amountPaise: pending.transaction.quote.total,
+        notes: {
+          transactionId: pending.transaction.id,
+          correlationId: pending.transaction.correlationId,
+          mandateId: pending.transaction.mandateId,
+        },
+      });
+      razorpayOrderId = order.id;
+
+      const link = await createPaymentLink({
+        amountPaise: pending.transaction.quote.total,
+        description: `Order ${order.id}`,
+        notes: { orderId: order.id, transactionId: pending.transaction.id },
+      });
+      paymentLinkUrl = link.short_url;
+    } catch (err) {
+      console.warn('Razorpay order creation on approval notice:', err.message);
+    }
+  }
+
+  const updatedApproval = await prisma.pendingApproval.update({
+    where: { id: pending.id },
+    data: {
+      decision: newDecision,
+      decidedBy,
+    },
+  });
+
+  const updatedTransaction = await prisma.transaction.update({
+    where: { id: pending.transactionId },
+    data: {
+      state: razorpayOrderId ? 'order_created' : newTxState,
+      razorpayOrderId: razorpayOrderId || pending.transaction.razorpayOrderId,
+    },
+  });
+
+  const auditReason = reason || (isApproved
+    ? `Transaction approved by ${decidedBy}`
+    : `Transaction declined by ${decidedBy}`);
+
+  const auditLog = await prisma.auditLogRow.create({
+    data: {
+      correlationId: pending.transaction.correlationId,
+      transactionId: pending.transactionId,
+      step: 'approval_decision',
+      decision: isApproved ? 'allow' : 'deny',
+      reason: auditReason,
+      ruleId: 'human_review',
+      actor: decidedBy,
+    },
+  });
+
+  return {
+    success: true,
+    decision: newDecision,
+    pendingApproval: updatedApproval,
+    transaction: updatedTransaction,
+    auditLog,
+    paymentLinkUrl,
+  };
+});
+
+// ---- Audit Logs ----
+app.get('/v1/audit/:correlationId', async (request, reply) => {
+  const { correlationId } = request.params;
+  const logs = await prisma.auditLogRow.findMany({
+    where: { correlationId },
+    orderBy: { createdAt: 'asc' },
+    include: {
+      transaction: {
+        include: {
+          quote: true,
+          mandate: {
+            include: { agent: true },
+          },
+          pendingApproval: true,
+        },
+      },
+    },
+  });
+
+  if (!logs || logs.length === 0) {
+    // Check if correlationId exists on a transaction directly
+    const tx = await prisma.transaction.findUnique({
+      where: { correlationId },
+      include: {
+        quote: true,
+        mandate: { include: { agent: true } },
+        pendingApproval: true,
+      },
+    });
+
+    if (!tx) {
+      return reply.code(404).send({ error: 'No audit records found for correlationId: ' + correlationId });
+    }
+  }
+
+  return logs;
+});
+
+// ---- Transactions ----
+app.get('/v1/transactions/:id', async (request, reply) => {
+  const { id } = request.params;
+  const transaction = await prisma.transaction.findFirst({
+    where: {
+      OR: [{ id }, { correlationId: id }],
+    },
+    include: {
+      quote: true,
+      mandate: { include: { agent: true } },
+      pendingApproval: true,
+      auditLogs: { orderBy: { createdAt: 'asc' } },
+    },
+  });
+
+  if (!transaction) {
+    return reply.code(404).send({ error: 'Transaction not found' });
+  }
+
+  return transaction;
 });
 
 // ---- Webhook ----

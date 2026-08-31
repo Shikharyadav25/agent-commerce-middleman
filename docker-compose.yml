@@ -1,14 +1,14 @@
-   services:
-     postgres:
-       image: postgres:16
-       restart: always
-       environment:
-         POSTGRES_USER: acg
-         POSTGRES_PASSWORD: acg_dev_password
-         POSTGRES_DB: acg
-       ports:
-         - "5433:5432"
-       volumes:
-         - pgdata:/var/lib/postgresql/data
-   volumes:
-     pgdata:
+services:
+  postgres:
+    image: postgres:16
+    restart: always
+    environment:
+      POSTGRES_USER: acm
+      POSTGRES_PASSWORD: acm_dev_password
+      POSTGRES_DB: acm
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:
