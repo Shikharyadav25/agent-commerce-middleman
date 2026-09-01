@@ -2,86 +2,236 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-const server = new McpServer({ name: 'acm-mcp-server', version: '0.1.0' });
+const server = new McpServer({
+  name: 'acm-commerce-gateway',
+  version: '1.0.0',
+});
+
+const API_BASE = process.env.ACM_API_URL || 'http://localhost:3000';
+
+async function safeFetch(url, options = {}) {
+  try {
+    const res = await fetch(url, options);
+    const data = await res.json().catch(() => ({ status: res.status, statusText: res.statusText }));
+    return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+  } catch (err) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            error: 'Gateway Connection Error',
+            message: err.message,
+            hint: 'Ensure Fastify backend is running on ' + API_BASE,
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+}
+
+server.tool(
+  'order_product',
+  'PRIMARY TOOL: Use this tool to instantly purchase or order groceries/products whenever the user asks to buy or order anything (e.g. "buy bread", "order 2 milk", "buy eggs", "buy ghee"). Automatically searches the store catalog, gets a price quote, and initiates payment under the active mandate, returning the Razorpay checkout link.',
+  {
+    query: z.string().describe('Item name or SKU to purchase (e.g. "bread", "milk", "eggs", "ghee", "toor dal", "rice")'),
+    quantity: z.number().default(1).describe('Quantity to purchase (defaults to 1)'),
+  },
+  async ({ query, quantity = 1 }) => {
+    try {
+      const catRes = await fetch(`${API_BASE}/v1/catalog`);
+      const catalog = await catRes.json();
+      const q = query.toLowerCase().trim();
+
+      const item = catalog.find((p) =>
+        p.sku.toLowerCase().includes(q) ||
+        p.name.toLowerCase().includes(q) ||
+        q.includes(p.name.toLowerCase().split(',')[0]) ||
+        q.includes(p.sku.split('-')[0])
+      );
+
+      if (!item) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  error: `Product not found matching "${query}"`,
+                  availableItems: catalog.map((p) => ({ sku: p.sku, name: p.name, price: `₹${p.price / 100}` })),
+                },
+                null,
+                2
+              ),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const quoteRes = await fetch(`${API_BASE}/v1/quotes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: [{ sku: item.sku, qty: quantity }] }),
+      });
+      const quote = await quoteRes.json();
+
+      const mandateRes = await fetch(`${API_BASE}/v1/mandates`);
+      const mandates = await mandateRes.json();
+      const mandateId = Array.isArray(mandates) && mandates.length > 0 ? mandates[0].id : null;
+
+      if (!mandateId) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: 'No active spending mandate found.' }) }],
+          isError: true,
+        };
+      }
+
+      const payRes = await fetch(`${API_BASE}/v1/payments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quoteId: quote.id, mandateId }),
+      });
+      const payData = await payRes.json();
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                itemPurchased: { sku: item.sku, name: item.name, qty: quantity, total: `₹${quote.total / 100}` },
+                paymentResult: payData,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }],
+        isError: true,
+      };
+    }
+  }
+);
 
 server.tool(
   'browse_catalog',
-  'List available products from the merchant catalog',
+  'List all available merchant products and grocery items with SKU, pricing, and stock (e.g. bread-white, milk-1l, eggs-dozen, ghee-500ml, toor-dal-1kg, rice-basmati-5kg)',
   {},
   async () => {
-    const res = await fetch('http://localhost:3000/v1/catalog');
-    const data = await res.json();
-    return { content: [{ type: 'text', text: JSON.stringify(data) }] };
+    return await safeFetch(`${API_BASE}/v1/catalog`);
+  }
+);
+
+server.tool(
+  'get_active_mandate',
+  'Get active spending mandates and authorization limits for the AI agent (including max transaction cap, auto-approval thresholds, and merchant info)',
+  {},
+  async () => {
+    return await safeFetch(`${API_BASE}/v1/mandates`);
   }
 );
 
 server.tool(
   'get_quote',
-  'Get a price quote for chosen items',
-  { items: z.array(z.object({ sku: z.string(), qty: z.number() })) },
+  'Generate an official price quote for chosen items before initiating payment. Accepts an array of item objects with "sku" (e.g. "bread-white") and "qty" (e.g. 1)',
+  {
+    items: z.array(
+      z.object({
+        sku: z.string().describe('The product SKU identifier (e.g. bread-white, milk-1l, eggs-dozen)'),
+        qty: z.number().describe('Quantity of the item to purchase'),
+      })
+    ),
+  },
   async ({ items }) => {
-    const res = await fetch('http://localhost:3000/v1/quotes', {
+    return await safeFetch(`${API_BASE}/v1/quotes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ items }),
     });
-    const data = await res.json();
-    return { content: [{ type: 'text', text: JSON.stringify(data) }] };
   }
 );
 
 server.tool(
   'initiate_payment',
-  'Start payment for a quote, subject to mandate checks',
-  { quoteId: z.string(), mandateId: z.string() },
+  'Submit a quote for payment evaluation. If mandateId is omitted, the active registered mandate is used automatically. Returns instant Razorpay payment link for approved orders, or routes to human approval if limits are exceeded.',
+  {
+    quoteId: z.string().describe('The quote ID obtained from get_quote'),
+    mandateId: z.string().optional().describe('Optional mandate ID. If omitted, the default active mandate is used automatically.'),
+  },
   async ({ quoteId, mandateId }) => {
-    const res = await fetch('http://localhost:3000/v1/payments', {
+    let resolvedMandateId = mandateId;
+    if (!resolvedMandateId) {
+      try {
+        const res = await fetch(`${API_BASE}/v1/mandates`);
+        const mandates = await res.json();
+        if (Array.isArray(mandates) && mandates.length > 0) {
+          resolvedMandateId = mandates[0].id;
+        }
+      } catch {
+        // fallback
+      }
+    }
+
+    if (!resolvedMandateId) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ error: 'No active mandate found' }) }],
+        isError: true,
+      };
+    }
+
+    return await safeFetch(`${API_BASE}/v1/payments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ quoteId, mandateId }),
+      body: JSON.stringify({ quoteId, mandateId: resolvedMandateId }),
     });
-    const data = await res.json();
-    return { content: [{ type: 'text', text: JSON.stringify(data) }] };
   }
 );
 
 server.tool(
   'check_status',
-  'Check the status of a transaction',
-  { transactionId: z.string() },
+  'Check the live status and payment state of a transaction (e.g. order_created, paid, gated, failed)',
+  {
+    transactionId: z.string().describe('The transaction ID or correlation ID'),
+  },
   async ({ transactionId }) => {
-    const res = await fetch(`http://localhost:3000/v1/transactions/${transactionId}`);
-    const data = await res.json();
-    return { content: [{ type: 'text', text: JSON.stringify(data) }] };
+    return await safeFetch(`${API_BASE}/v1/transactions/${transactionId}`);
   }
 );
+
 server.tool(
   'suggest_addons',
-  'Suggest complementary products based on items already in the cart',
-  { skus: z.array(z.string()) },
+  'Suggest smart complementary add-ons based on items already in the shopping cart (e.g. passing ["bread-white"] recommends ["butter-salted-500g"])',
+  {
+    skus: z.array(z.string()).describe('Array of product SKUs currently in cart'),
+  },
   async ({ skus }) => {
-    const res = await fetch('http://localhost:3000/v1/suggest-addons', {
+    return await safeFetch(`${API_BASE}/v1/suggest-addons`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ skus }),
     });
-    const data = await res.json();
-    return { content: [{ type: 'text', text: JSON.stringify(data) }] };
   }
 );
 
 server.tool(
   'request_refund',
-  'Request a refund for a completed transaction',
-  { transactionId: z.string(), reason: z.string().optional() },
+  'Request a Razorpay refund for a completed paid transaction',
+  {
+    transactionId: z.string().describe('Transaction ID of the paid order'),
+    reason: z.string().optional().describe('Reason for refund'),
+  },
   async ({ transactionId, reason }) => {
-    const res = await fetch(`http://localhost:3000/v1/transactions/${transactionId}/refund`, {
+    return await safeFetch(`${API_BASE}/v1/transactions/${transactionId}/refund`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason }),
     });
-    const data = await res.json();
-    return { content: [{ type: 'text', text: JSON.stringify(data) }] };
   }
 );
 

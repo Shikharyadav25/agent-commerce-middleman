@@ -25,6 +25,14 @@ app.get('/v1/catalog', async () => {
   return prisma.product.findMany();
 });
 
+// ---- Mandates ----
+app.get('/v1/mandates', async () => {
+  return prisma.mandate.findMany({
+    where: { active: true },
+    include: { agent: true },
+  });
+});
+
 app.post('/v1/quotes', async (request) => {
   const { items } = request.body;
   const products = await prisma.product.findMany({ where: { sku: { in: items.map(i => i.sku) } } });
@@ -346,7 +354,7 @@ app.post('/v1/payments', async (request, reply) => {
   const firstProduct = await prisma.product.findFirst({ where: { sku: items[0].sku } });
   const category = firstProduct?.category || 'unknown';
 
-  // sum today's paid transactions for this mandate
+  // Sum today's paid transactions for this mandate (for daily cap check)
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
   const todaysTxns = await prisma.transaction.findMany({
@@ -354,6 +362,16 @@ app.post('/v1/payments', async (request, reply) => {
     include: { quote: true },
   });
   const todaysCumulativeSpend = todaysTxns.reduce((sum, t) => sum + t.quote.total, 0);
+
+  // Check if merchant has had prior approved/paid transactions with this mandate
+  const priorApprovedCount = await prisma.transaction.count({
+    where: {
+      mandateId,
+      state: { in: ['paid', 'order_created', 'approved'] },
+    },
+  });
+  const isFirstTimeMerchant = priorApprovedCount === 0;
+
   const correlationId = quote.id + '-' + Date.now();
 
   const result = await evaluateTransaction({
@@ -363,7 +381,7 @@ app.post('/v1/payments', async (request, reply) => {
     category,
     quoteTotal: quote.total,
     todaysCumulativeSpend,
-    isFirstTimeMerchant: todaysTxns.length === 0,
+    isFirstTimeMerchant,
     correlationId,
     writeAuditRow: (row) => prisma.auditLogRow.create({ data: row }),
   });
@@ -379,6 +397,12 @@ app.post('/v1/payments', async (request, reply) => {
       quoteId,
       state: result.finalDecision === 'pending' ? 'gated' : 'policy_checked',
     },
+  });
+
+  // Link initial audit rows written during evaluation to this transaction record
+  await prisma.auditLogRow.updateMany({
+    where: { correlationId, transactionId: null },
+    data: { transactionId: transaction.id },
   });
 
   if (result.finalDecision === 'pending') {
