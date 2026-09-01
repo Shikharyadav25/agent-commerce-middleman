@@ -5,6 +5,7 @@ import rawBody from 'fastify-raw-body';
 import cors from '@fastify/cors';
 import { PrismaClient } from '@prisma/client';
 import { createOrder, createPaymentLink } from './razorpay.js';
+import { evaluateTransaction } from '../../../packages/policy-engine/src/evaluate.js';
 
 const app = Fastify({ logger: true });
 const prisma = new PrismaClient();
@@ -147,7 +148,7 @@ app.post('/v1/pending-approvals/:id/decide', async (request, reply) => {
   });
 
   const auditReason = reason || (isApproved
-    ? `Transaction approved by ${decidedBy}`
+    ? `Transaction approved by ${decidedBy}.${paymentLinkUrl ? ` Payment link: ${paymentLinkUrl}` : ''}`
     : `Transaction declined by ${decidedBy}`);
 
   const auditLog = await prisma.auditLogRow.create({
@@ -161,6 +162,20 @@ app.post('/v1/pending-approvals/:id/decide', async (request, reply) => {
       actor: decidedBy,
     },
   });
+
+  if (isApproved && paymentLinkUrl) {
+    await prisma.auditLogRow.create({
+      data: {
+        correlationId: pending.transaction.correlationId,
+        transactionId: pending.transactionId,
+        step: 'order_created',
+        decision: 'allow',
+        reason: `Razorpay Order ${razorpayOrderId} created. Payment link generated: ${paymentLinkUrl}`,
+        ruleId: null,
+        actor: 'system',
+      },
+    });
+  }
 
   return {
     success: true,
@@ -318,6 +333,102 @@ app.post('/v1/transactions/:id/refund', async (request) => {
     data: { correlationId: transaction.correlationId, transactionId: id, step: 'refund', decision: 'allow', reason: reason || 'refund requested', actor: 'system' },
   });
   return refund;
+});
+
+app.post('/v1/payments', async (request, reply) => {
+  const { quoteId, mandateId } = request.body;
+  const quote = await prisma.quote.findUnique({ where: { id: quoteId } });
+  if (!quote) return reply.code(404).send({ error: 'quote not found' });
+  const mandate = await prisma.mandate.findUnique({ where: { id: mandateId } });
+  if (!mandate) return reply.code(404).send({ error: 'mandate not found' });
+  const agent = await prisma.agent.findUnique({ where: { id: mandate.agentId } });
+  const items = quote.items;
+  const firstProduct = await prisma.product.findFirst({ where: { sku: items[0].sku } });
+  const category = firstProduct?.category || 'unknown';
+
+  // sum today's paid transactions for this mandate
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  const todaysTxns = await prisma.transaction.findMany({
+    where: { mandateId, state: 'paid', createdAt: { gte: startOfDay } },
+    include: { quote: true },
+  });
+  const todaysCumulativeSpend = todaysTxns.reduce((sum, t) => sum + t.quote.total, 0);
+  const correlationId = quote.id + '-' + Date.now();
+
+  const result = await evaluateTransaction({
+    agent,
+    mandate,
+    merchantId: mandate.merchantId,
+    category,
+    quoteTotal: quote.total,
+    todaysCumulativeSpend,
+    isFirstTimeMerchant: todaysTxns.length === 0,
+    correlationId,
+    writeAuditRow: (row) => prisma.auditLogRow.create({ data: row }),
+  });
+
+  if (result.finalDecision === 'deny') {
+    return { status: 'denied', reason: result.reason };
+  }
+
+  const transaction = await prisma.transaction.create({
+    data: {
+      correlationId,
+      mandateId,
+      quoteId,
+      state: result.finalDecision === 'pending' ? 'gated' : 'policy_checked',
+    },
+  });
+
+  if (result.finalDecision === 'pending') {
+    await prisma.pendingApproval.create({
+      data: {
+        transactionId: transaction.id,
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      },
+    });
+    return {
+      status: 'awaiting_human_approval',
+      reason: result.reason,
+      transactionId: transaction.id,
+    };
+  }
+
+  const order = await createOrder({
+    quoteId: quote.id,
+    amountPaise: quote.total,
+    notes: { transactionId: transaction.id, agentId: agent.id, mandateId },
+  });
+
+  await prisma.transaction.update({
+    where: { id: transaction.id },
+    data: { state: 'order_created', razorpayOrderId: order.id },
+  });
+
+  const link = await createPaymentLink({
+    amountPaise: quote.total,
+    description: 'ACM purchase',
+    notes: { orderId: order.id },
+  });
+
+  await prisma.auditLogRow.create({
+    data: {
+      correlationId,
+      transactionId: transaction.id,
+      step: 'order_created',
+      decision: 'allow',
+      reason: `Razorpay Order ${order.id} created. Payment link generated: ${link.short_url}`,
+      ruleId: null,
+      actor: 'system',
+    },
+  });
+
+  return {
+    status: 'payment_link_created',
+    paymentLink: link.short_url,
+    transactionId: transaction.id,
+  };
 });
 
 // ---- Start server ----

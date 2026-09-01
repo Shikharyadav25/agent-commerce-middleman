@@ -395,10 +395,24 @@ export default function AuditTimelinePage({
                     </div>
 
                     {/* Middle: Plain-English Reason */}
-                    <div className="bg-zinc-950/70 rounded-xl p-3.5 border border-zinc-800/60">
+                    <div className="bg-zinc-950/70 rounded-xl p-3.5 border border-zinc-800/60 space-y-2">
                       <p className="text-xs text-zinc-200 leading-relaxed font-normal">
                         {log.reason}
                       </p>
+                      {log.reason?.includes('https://rzp.io') && (
+                        <div className="pt-2 border-t border-zinc-800/60 flex items-center justify-between gap-2">
+                          <span className="text-[11px] text-emerald-400 font-medium font-mono">Payment Link Ready</span>
+                          <a
+                            href={log.reason.match(/https:\/\/rzp\.io\/[a-zA-Z0-9_\-\/]+/)?.[0]}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-3 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-bold flex items-center space-x-1 shadow transition-colors cursor-pointer"
+                          >
+                            <span>Open Checkout</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        </div>
+                      )}
                     </div>
 
                     {/* Bottom Metadata: Rule ID, Actor, Timestamp */}
