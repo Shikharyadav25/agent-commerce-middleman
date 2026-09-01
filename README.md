@@ -73,7 +73,7 @@ acm/
 
 ---
 
-## Quickstart Guide
+## Quickstart Guide (Simplified 1-Command Startup)
 
 ### 1. Prerequisites
 - **Node.js**: v20+ or v22+ (`node -v`)
@@ -99,40 +99,26 @@ PORT=3000
 
 ---
 
-### 3. Start Database & Run Migrations
+### 3. One-Click Setup (Docker + Database + Seed Data)
 
-1. Start the PostgreSQL Docker container:
-   ```bash
-   docker compose up -d
-   ```
-
-2. Push Prisma schema to the database:
-   ```bash
-   npm run db:push
-   ```
-
-3. Seed demo merchants, catalog items, and agent mandates:
-   ```bash
-   npm run db:seed
-   ```
-
-*(Optional: Run `npm run db:studio` to visually explore database tables).*
+Run the automated setup command:
+```bash
+npm run setup
+```
+*(This starts the Docker container on port 5433, synchronizes Prisma models, and seeds test data in one step).*
 
 ---
 
-### 4. Start the Backend API
+### 4. Single-Command Dev Environment (API + Dashboard)
 
-Start the Fastify API (runs on `http://localhost:3000`):
+Start both the **Fastify Backend API (:3000)** and the **Next.js Dashboard (:3001)** simultaneously in one terminal:
 ```bash
-npm run dev:api
-# or
-npm run api:dev
+npm run dev
 ```
 
-Test the health check endpoint:
+*Or launch API + Dashboard + Prisma Studio GUI simultaneously:*
 ```bash
-curl http://localhost:3000/health
-# Response: {"status":"ok"}
+npm run dev:all
 ```
 
 ---

@@ -9,6 +9,9 @@
     "packages/*"
   ],
   "scripts": {
+    "setup": "docker compose up -d && npm run db:push && npm run db:seed",
+    "dev": "concurrently -n \"API,DASHBOARD\" -c \"cyan.bold,magenta.bold\" \"node apps/api/src/index.js\" \"npm run dev --workspace=dashboard\"",
+    "dev:all": "concurrently -n \"API,DASHBOARD,STUDIO\" -c \"cyan.bold,magenta.bold,yellow.bold\" \"node apps/api/src/index.js\" \"npm run dev --workspace=dashboard\" \"prisma studio --schema=packages/db/prisma/schema.prisma\"",
     "dev:api": "node apps/api/src/index.js",
     "api:dev": "node apps/api/src/index.js",
     "dev:dashboard": "npm run dev --workspace=dashboard",
@@ -41,5 +44,8 @@
     "prisma": "^6.19.3",
     "razorpay": "^2.9.8",
     "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5"
   }
 }

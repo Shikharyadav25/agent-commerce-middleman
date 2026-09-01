@@ -86,74 +86,33 @@ flowchart TD
 
 ---
 
-## 2. Sequential Startup Runbook (Every Restart)
+## 2. Sequential Startup Runbook (Simplified)
 
-Whenever you start or restart your machine or work session, follow these steps in order:
+You no longer need 5 separate terminal tabs. The workflow is streamlined into **2 commands**:
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Dev as Developer
-    participant Docker as Docker (Postgres :5433)
-    participant DB as Prisma Migrations
-    participant API as Fastify API (:3000)
-    participant UI as Next.js Dashboard (:3001)
-    participant Ngrok as ngrok Tunnel
-    participant Claude as Claude Desktop
-
-    Dev->>Docker: 1. docker compose up -d
-    Dev->>DB: 2. npm run db:push && npm run db:seed
-    Dev->>API: 3. npm run dev:api
-    Dev->>UI: 4. npm run dev:dashboard
-    Dev->>Ngrok: 5. ngrok http 3000 (Optional for webhooks)
-    Dev->>Claude: 6. Open Claude Desktop (MCP tools active)
-```
-
-### Step 1: Start PostgreSQL Container
-In the `acm/` directory:
+### 🛠️ One-Time Setup (or Full Reset):
 ```bash
-docker compose up -d
+npm run setup
 ```
-*Verify it is running on port 5433:* `docker ps`
+*Automatically brings up Docker Postgres on port 5433, syncs Prisma models, and seeds demo data.*
 
 ---
 
-### Step 2: Push Database Schema & Seed Demo Data
+### 🚀 Running the App (Single Terminal):
 ```bash
-npm run db:push
-npm run db:seed
+npm run dev
 ```
-*This populates test merchants, grocery catalog items, and active agent spending mandates.*
+*Launches both the **Fastify Backend API (:3000)** and the **Next.js Dashboard (:3001)** simultaneously with color-coded logs in one terminal.*
+
+> **Want DB Studio too?** Run `npm run dev:all` to start the API, Dashboard, and Prisma Studio (5555) in parallel.
 
 ---
 
-### Step 3: Start the Backend API (Terminal 1)
-```bash
-npm run dev:api
-```
-*Runs on `http://localhost:3000`. Verify with:*
-```bash
-curl http://localhost:3000/health
-# Output: {"status":"ok"}
-```
-
----
-
-### Step 4: Start the Next.js Dashboard (Terminal 2)
-```bash
-npm run dev:dashboard
-```
-*Runs on `http://localhost:3001`.*
-- Open in browser: **[http://localhost:3001/approvals](http://localhost:3001/approvals)**
-
----
-
-### Step 5: (Optional) Start ngrok Webhook Tunnel (Terminal 3)
-If you are testing live Razorpay webhook delivery:
+### 🌐 (Optional) Webhook Tunnel for Live Razorpay Callbacks:
+If testing actual live webhook delivery from Razorpay:
 ```bash
 ngrok http 3000
 ```
-*Add the generated URL `https://<subdomain>.ngrok-free.dev/webhooks/razorpay` to your Razorpay Dashboard webhooks.*
 
 ---
 
