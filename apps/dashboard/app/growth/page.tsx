@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import Navbar from '../components/Navbar';
 import {
   TrendingUp,
   Zap,
@@ -120,11 +119,8 @@ export default function GrowthPage() {
   ];
 
   return (
-    <div className="min-h-screen bg-[#07090e] text-zinc-100 flex flex-col font-sans">
-      <Navbar />
-
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        {/* Header Title Banner */}
+    <div className="space-y-8 animate-fadeIn">
+      {/* Header Title Banner */}
         <div className="relative rounded-2xl p-6 sm:p-8 bg-gradient-to-r from-emerald-950/40 via-blue-950/20 to-zinc-900 border border-emerald-500/20 shadow-xl overflow-hidden">
           <div className="absolute right-0 top-0 translate-x-8 -translate-y-8 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
           <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
@@ -393,7 +389,6 @@ export default function GrowthPage() {
             </table>
           </div>
         </div>
-      </main>
     </div>
   );
 }
