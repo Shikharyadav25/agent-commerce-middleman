@@ -264,11 +264,22 @@ From either root workspace or `acm/`:
 | `npm run dev:api` | Start Fastify REST API with live reload (`http://localhost:3000`) |
 | `npm run dev:dashboard` | Start Next.js Dashboard UI (`http://localhost:3001`) |
 | `npm run mcp:start` | Run MCP server via stdio transport |
-| `npm test` | Run policy engine unit tests |
+| `npm test` | Run policy engine unit tests and full API integration test suite |
+| `npm run test:unit` | Run deterministic policy engine unit tests |
+| `npm run test:integration` | Run Fastify API and webhook integration tests |
 | `npm run db:push` | Sync Prisma schema with PostgreSQL database |
 | `npm run db:seed` | Seed initial database data |
 | `npm run db:studio` | Open Prisma Studio GUI |
 | `npm run api:test-order` | Run end-to-end integration test order script |
+
+---
+
+## Known Limitations & Design Assumptions
+
+1. **Deterministic vs. LLM-Evaluated Money Paths**: The money execution pipeline is deliberately 100% deterministic (zero-LLM trust) by design. LLMs only format requests via structured MCP schemas, while all financial guardrails and spending limits are strictly enforced by the backend engine.
+2. **Local Webhook Tunnels**: In local development, webhooks require `ngrok` or the direct Razorpay API synchronization fallback (`/v1/transactions/:id/sync`) when a public tunnel is not active.
+3. **Currency Precision**: All prices, quotes, and spending caps are handled exclusively in **paise** (integers) to prevent floating-point rounding errors.
+4. **Idempotent Quotes**: Quotes expire after 10 minutes and can only be used once per transaction to guard against duplicate payment attempts and replay attacks.
 
 ---
 

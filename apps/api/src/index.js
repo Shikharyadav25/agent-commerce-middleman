@@ -376,12 +376,18 @@ app.patch('/v1/agents/:id/status', async (request, reply) => {
   return { success: true, agent: updated };
 });
 
-app.post('/v1/quotes', async (request) => {
-  const { items } = request.body;
+app.post('/v1/quotes', async (request, reply) => {
+  const { items } = request.body || {};
+  if (!Array.isArray(items) || items.length === 0) {
+    return reply.code(400).send({ error: 'items array is required and must not be empty' });
+  }
   const products = await prisma.product.findMany({ where: { sku: { in: items.map(i => i.sku) } } });
+  if (products.length === 0) {
+    return reply.code(404).send({ error: 'No matching products found for the provided SKUs' });
+  }
   const total = items.reduce((sum, item) => {
     const product = products.find(p => p.sku === item.sku);
-    return sum + (product ? product.price * item.qty : 0);
+    return sum + (product ? product.price * (Number(item.qty) || 1) : 0);
   }, 0);
   const quote = await prisma.quote.create({
     data: { items, total, expiresAt: new Date(Date.now() + 10 * 60 * 1000) },
@@ -632,12 +638,20 @@ app.get('/v1/transactions/:id', async (request, reply) => {
 // ---- Webhook ----
 app.post('/webhooks/razorpay', { config: { rawBody: true } }, async (request, reply) => {
   const receivedSignature = request.headers['x-razorpay-signature'];
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET || '';
+
+  if (!receivedSignature || !request.rawBody) {
+    return reply.code(400).send({ error: 'missing signature or raw body' });
+  }
+
   const expectedSignature = crypto
-    .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
+    .createHmac('sha256', secret)
     .update(request.rawBody)
     .digest('hex');
 
-  const isValid = crypto.timingSafeEqual(Buffer.from(receivedSignature), Buffer.from(expectedSignature));
+  const receivedBuf = Buffer.from(receivedSignature);
+  const expectedBuf = Buffer.from(expectedSignature);
+  const isValid = receivedBuf.length === expectedBuf.length && crypto.timingSafeEqual(receivedBuf, expectedBuf);
 
   if (!isValid) {
     console.warn('Webhook rejected: signature mismatch');
@@ -727,23 +741,29 @@ app.post('/webhooks/razorpay', { config: { rawBody: true } }, async (request, re
 });
 
 // ---- Add-ons & Refunds ----
-app.post('/v1/suggest-addons', async (request) => {
-  const { skus } = request.body;
+app.post('/v1/suggest-addons', async (request, reply) => {
+  const { skus } = request.body || {};
+  if (!Array.isArray(skus) || skus.length === 0) {
+    return [];
+  }
   const cartItems = await prisma.product.findMany({ where: { sku: { in: skus } } });
   const pairedSkus = [...new Set(cartItems.flatMap(p => p.pairsWith))];
   const suggestions = await prisma.product.findMany({ where: { sku: { in: pairedSkus } } });
   return suggestions;
 });
 
-app.post('/v1/transactions/:id/refund', async (request) => {
+app.post('/v1/transactions/:id/refund', async (request, reply) => {
   const { id } = request.params;
-  const { reason } = request.body;
-  const transaction = await prisma.transaction.findUnique({ where: { id } });
+  const { reason } = request.body || {};
+  const transaction = await prisma.transaction.findUnique({
+    where: { id },
+    include: { quote: true },
+  });
   if (!transaction || transaction.state !== 'paid') {
-    return { error: 'transaction not found or not eligible for refund' };
+    return reply.code(400).send({ error: 'transaction not found or not eligible for refund' });
   }
   const { refundPayment } = await import('./razorpay.js');
-  const refund = await refundPayment(transaction.razorpayPaymentId, transaction.quote.total);
+  const refund = await refundPayment(transaction.razorpayPaymentId || 'pay_mock', transaction.quote.total);
   await prisma.transaction.update({ where: { id }, data: { state: 'refunded' } });
   await prisma.auditLogRow.create({
     data: { correlationId: transaction.correlationId, transactionId: id, step: 'refund', decision: 'allow', reason: reason || 'refund requested', actor: 'system' },
@@ -755,12 +775,31 @@ app.post('/v1/payments', async (request, reply) => {
   const { quoteId } = request.body || {};
   let { mandateId, agentId, agentName } = request.body || {};
 
+  if (!quoteId) {
+    return reply.code(400).send({ error: 'quoteId is required' });
+  }
+
   // Check headers if not in body
   if (!agentId) agentId = request.headers['x-agent-id'];
   if (!agentName) agentName = request.headers['x-agent-name'];
 
   const quote = await prisma.quote.findUnique({ where: { id: quoteId } });
   if (!quote) return reply.code(404).send({ error: 'quote not found' });
+
+  // Expiration check
+  if (new Date() > new Date(quote.expiresAt)) {
+    return reply.code(400).send({ error: 'quote has expired', expiresAt: quote.expiresAt });
+  }
+
+  // Idempotency check: quote cannot be reused for multiple payment attempts
+  const existingTx = await prisma.transaction.findUnique({ where: { quoteId } });
+  if (existingTx) {
+    return reply.code(409).send({
+      error: 'Quote has already been processed in a transaction',
+      transactionId: existingTx.id,
+      state: existingTx.state,
+    });
+  }
 
   // Dynamically ensure agent and mandate if mandateId is omitted or agent is provided
   let mandate = null;
@@ -784,11 +823,15 @@ app.post('/v1/payments', async (request, reply) => {
   const firstProduct = await prisma.product.findFirst({ where: { sku: items[0]?.sku } });
   const category = firstProduct?.category || 'grocery.staples';
 
-  // Sum today's paid transactions for this mandate (for daily cap check)
+  // Sum today's committed spend for this mandate (paid + in-flight order_created/approved/policy_checked)
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
   const todaysTxns = await prisma.transaction.findMany({
-    where: { mandateId, state: 'paid', createdAt: { gte: startOfDay } },
+    where: {
+      mandateId,
+      state: { in: ['paid', 'order_created', 'approved', 'policy_checked'] },
+      createdAt: { gte: startOfDay },
+    },
     include: { quote: true },
   });
   const todaysCumulativeSpend = todaysTxns.reduce((sum, t) => sum + (t.quote?.total || 0), 0);
@@ -887,8 +930,12 @@ app.post('/v1/payments', async (request, reply) => {
   };
 });
 
-// ---- Start server ----
-app.listen({ port: process.env.PORT || 3000 }, (err, address) => {
-  if (err) { console.error(err); process.exit(1); }
-  console.log(`API running at ${address}`);
-});
+// ---- Start server & Exports ----
+export { app, prisma, ensureAgentAndMandate };
+
+if (process.env.NODE_ENV !== 'test') {
+  app.listen({ port: process.env.PORT || 3000 }, (err, address) => {
+    if (err) { console.error(err); process.exit(1); }
+    console.log(`API running at ${address}`);
+  });
+}
