@@ -267,7 +267,13 @@ export default function AuditTimelinePage({
           <div>
             <span className="text-[10px] text-zinc-500 uppercase font-semibold">Agent</span>
             <div className="text-xs font-medium text-zinc-200 mt-0.5">
-              {agent?.name || 'Autonomous Agent'}
+              <Link
+                href={`/agents/${transaction?.mandate?.agentId || 'claude-desktop'}`}
+                className="text-blue-400 hover:text-blue-300 hover:underline flex items-center space-x-1"
+              >
+                <span>{agent?.name || 'Autonomous Agent'}</span>
+                <ExternalLink className="w-3 h-3" />
+              </Link>
             </div>
           </div>
 

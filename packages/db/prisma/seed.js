@@ -50,15 +50,15 @@ async function main() {
     },
   });
 
-  const agent = await prisma.agent.create({
-    data: { name: 'Demo Grocery Bot', apiKeyHash: 'demo-key-hash-replace-me' },
+  const agentClaude = await prisma.agent.create({
+    data: { id: 'claude-desktop', name: 'Claude Desktop', apiKeyHash: 'hash-claude-desktop-key' },
   });
 
   await prisma.mandate.create({
     data: {
-      agentId: agent.id,
+      agentId: agentClaude.id,
       merchantId: merchant.id,
-      signedPayload: JSON.stringify({ agentId: agent.id, merchantId: merchant.id, ...template }),
+      signedPayload: JSON.stringify({ agentId: agentClaude.id, merchantId: merchant.id, ...template }),
       maxPerTransaction: template.maxPerTransaction,
       dailyCap: template.dailyCap,
       autoApproveThreshold: template.autoApproveThreshold,
@@ -66,7 +66,23 @@ async function main() {
     },
   });
 
-  console.log('Seed complete. Merchant ID:', merchant.id, 'Agent ID:', agent.id);
+  const agentChatGPT = await prisma.agent.create({
+    data: { id: 'chatgpt-agent', name: 'ChatGPT Assistant', apiKeyHash: 'hash-chatgpt-agent-key' },
+  });
+
+  await prisma.mandate.create({
+    data: {
+      agentId: agentChatGPT.id,
+      merchantId: merchant.id,
+      signedPayload: JSON.stringify({ agentId: agentChatGPT.id, merchantId: merchant.id, ...template }),
+      maxPerTransaction: 300000,   // ₹3,000
+      dailyCap: 500000,            // ₹5,000
+      autoApproveThreshold: 50000, // ₹500
+      allowedCategories: template.allowedCategories,
+    },
+  });
+
+  console.log('Seed complete. Merchant ID:', merchant.id, 'Claude ID:', agentClaude.id, 'ChatGPT ID:', agentChatGPT.id);
 }
 
 main().finally(() => prisma.$disconnect());

@@ -571,11 +571,15 @@ export default function ApprovalsPage() {
                       </div>
                       <div>
                         <div className="flex items-center space-x-2">
-                          <span className="font-semibold text-sm text-white">
-                            {agent?.name || 'Autonomous Agent'}
-                          </span>
+                          <Link
+                            href={`/agents/${agent?.id || 'claude-desktop'}`}
+                            className="font-semibold text-sm text-white hover:text-blue-400 transition-colors flex items-center space-x-1"
+                          >
+                            <span>{agent?.name || 'Autonomous Agent'}</span>
+                            <ExternalLink className="w-3 h-3 text-zinc-500 hover:text-blue-400" />
+                          </Link>
                           <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 border border-zinc-700/60 font-mono">
-                            ID: {approval.transaction?.mandateId?.slice(0, 10) || 'mandate-1'}
+                            ID: {agent?.id || approval.transaction?.mandateId?.slice(0, 10) || 'agent'}
                           </span>
                         </div>
                         <span className="text-[11px] text-zinc-500">

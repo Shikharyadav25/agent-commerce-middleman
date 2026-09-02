@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Shield, CheckCircle2, History, Search, Terminal, ArrowUpRight } from 'lucide-react';
+import { Shield, CheckCircle2, History, Search, Bot, Terminal, ArrowUpRight } from 'lucide-react';
 
 export default function Navbar() {
   const pathname = usePathname();
@@ -19,6 +19,7 @@ export default function Navbar() {
   };
 
   const isApprovalsActive = pathname === '/approvals' || pathname === '/';
+  const isAgentsActive = pathname.startsWith('/agents');
   const isAuditActive = pathname.startsWith('/audit');
 
   return (
@@ -54,6 +55,18 @@ export default function Navbar() {
               >
                 <CheckCircle2 className="w-4 h-4" />
                 <span>Approvals Inbox</span>
+              </Link>
+
+              <Link
+                href="/agents"
+                className={`flex items-center space-x-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-all ${
+                  isAgentsActive
+                    ? 'bg-blue-600/15 text-blue-400 border border-blue-500/30'
+                    : 'text-zinc-400 hover:text-white hover:bg-zinc-800/50'
+                }`}
+              >
+                <Bot className="w-4 h-4" />
+                <span>AI Agents</span>
               </Link>
 
               <Link

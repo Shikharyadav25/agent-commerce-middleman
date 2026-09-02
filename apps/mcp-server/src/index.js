@@ -8,10 +8,22 @@ const server = new McpServer({
 });
 
 const API_BASE = process.env.ACM_API_URL || 'http://localhost:3000';
+const AGENT_NAME = process.env.ACM_AGENT_NAME || process.env.AGENT_NAME || 'Claude Desktop';
+const AGENT_ID = process.env.ACM_AGENT_ID || process.env.AGENT_ID || AGENT_NAME.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
 async function safeFetch(url, options = {}) {
   try {
-    const res = await fetch(url, options);
+    const defaultHeaders = {
+      'x-agent-id': AGENT_ID,
+      'x-agent-name': AGENT_NAME,
+    };
+    const res = await fetch(url, {
+      ...options,
+      headers: {
+        ...defaultHeaders,
+        ...(options.headers || {}),
+      },
+    });
     const data = await res.json().catch(() => ({ status: res.status, statusText: res.statusText }));
     return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
   } catch (err) {
@@ -40,7 +52,9 @@ server.tool(
   },
   async ({ query, quantity = 1 }) => {
     try {
-      const catRes = await fetch(`${API_BASE}/v1/catalog`);
+      const catRes = await fetch(`${API_BASE}/v1/catalog`, {
+        headers: { 'x-agent-id': AGENT_ID, 'x-agent-name': AGENT_NAME },
+      });
       const catalog = await catRes.json();
       const q = query.toLowerCase().trim();
 
@@ -72,26 +86,26 @@ server.tool(
 
       const quoteRes = await fetch(`${API_BASE}/v1/quotes`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-agent-id': AGENT_ID, 'x-agent-name': AGENT_NAME },
         body: JSON.stringify({ items: [{ sku: item.sku, qty: quantity }] }),
       });
       const quote = await quoteRes.json();
 
-      const mandateRes = await fetch(`${API_BASE}/v1/mandates`);
+      const mandateRes = await fetch(`${API_BASE}/v1/mandates?agentId=${encodeURIComponent(AGENT_ID)}&agentName=${encodeURIComponent(AGENT_NAME)}`, {
+        headers: { 'x-agent-id': AGENT_ID, 'x-agent-name': AGENT_NAME },
+      });
       const mandates = await mandateRes.json();
       const mandateId = Array.isArray(mandates) && mandates.length > 0 ? mandates[0].id : null;
 
-      if (!mandateId) {
-        return {
-          content: [{ type: 'text', text: JSON.stringify({ error: 'No active spending mandate found.' }) }],
-          isError: true,
-        };
-      }
-
       const payRes = await fetch(`${API_BASE}/v1/payments`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ quoteId: quote.id, mandateId }),
+        headers: { 'Content-Type': 'application/json', 'x-agent-id': AGENT_ID, 'x-agent-name': AGENT_NAME },
+        body: JSON.stringify({
+          quoteId: quote.id,
+          mandateId,
+          agentId: AGENT_ID,
+          agentName: AGENT_NAME,
+        }),
       });
       const payData = await payRes.json();
 
@@ -101,6 +115,7 @@ server.tool(
             type: 'text',
             text: JSON.stringify(
               {
+                agent: { id: AGENT_ID, name: AGENT_NAME },
                 itemPurchased: { sku: item.sku, name: item.name, qty: quantity, total: `₹${quote.total / 100}` },
                 paymentResult: payData,
               },
@@ -130,10 +145,10 @@ server.tool(
 
 server.tool(
   'get_active_mandate',
-  'Get active spending mandates and authorization limits for the AI agent (including max transaction cap, auto-approval thresholds, and merchant info)',
+  'Get active spending mandates and authorization limits for this AI agent (including max transaction cap, auto-approval thresholds, and merchant info)',
   {},
   async () => {
-    return await safeFetch(`${API_BASE}/v1/mandates`);
+    return await safeFetch(`${API_BASE}/v1/mandates?agentId=${encodeURIComponent(AGENT_ID)}&agentName=${encodeURIComponent(AGENT_NAME)}`);
   }
 );
 
@@ -159,16 +174,18 @@ server.tool(
 
 server.tool(
   'initiate_payment',
-  'Submit a quote for payment evaluation. If mandateId is omitted, the active registered mandate is used automatically. Returns instant Razorpay payment link for approved orders, or routes to human approval if limits are exceeded.',
+  'Submit a quote for payment evaluation under this agent. Automatically binds to this agent\'s mandate. Returns instant Razorpay payment link for approved orders, or routes to human approval if limits are exceeded.',
   {
     quoteId: z.string().describe('The quote ID obtained from get_quote'),
-    mandateId: z.string().optional().describe('Optional mandate ID. If omitted, the default active mandate is used automatically.'),
+    mandateId: z.string().optional().describe('Optional mandate ID. If omitted, this agent\'s active mandate is used automatically.'),
   },
   async ({ quoteId, mandateId }) => {
     let resolvedMandateId = mandateId;
     if (!resolvedMandateId) {
       try {
-        const res = await fetch(`${API_BASE}/v1/mandates`);
+        const res = await fetch(`${API_BASE}/v1/mandates?agentId=${encodeURIComponent(AGENT_ID)}&agentName=${encodeURIComponent(AGENT_NAME)}`, {
+          headers: { 'x-agent-id': AGENT_ID, 'x-agent-name': AGENT_NAME },
+        });
         const mandates = await res.json();
         if (Array.isArray(mandates) && mandates.length > 0) {
           resolvedMandateId = mandates[0].id;
@@ -178,17 +195,15 @@ server.tool(
       }
     }
 
-    if (!resolvedMandateId) {
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ error: 'No active mandate found' }) }],
-        isError: true,
-      };
-    }
-
     return await safeFetch(`${API_BASE}/v1/payments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ quoteId, mandateId: resolvedMandateId }),
+      body: JSON.stringify({
+        quoteId,
+        mandateId: resolvedMandateId,
+        agentId: AGENT_ID,
+        agentName: AGENT_NAME,
+      }),
     });
   }
 );

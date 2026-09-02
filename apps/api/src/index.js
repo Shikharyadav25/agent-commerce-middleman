@@ -4,11 +4,84 @@ import crypto from 'crypto';
 import rawBody from 'fastify-raw-body';
 import cors from '@fastify/cors';
 import { PrismaClient } from '@prisma/client';
-import { createOrder, createPaymentLink } from './razorpay.js';
+import { createOrder, createPaymentLink, razorpay } from './razorpay.js';
 import { evaluateTransaction } from '../../../packages/policy-engine/src/evaluate.js';
 
 const app = Fastify({ logger: true });
 const prisma = new PrismaClient();
+
+// Helper to sync pending order directly with Razorpay API if webhook was not delivered locally
+async function syncTransactionFromRazorpay(tx, cachedPayments = null) {
+  if (!tx || !tx.razorpayOrderId || tx.state === 'paid' || tx.state === 'refunded') {
+    return tx;
+  }
+
+  try {
+    const paymentsList = cachedPayments || (await razorpay.payments.all({ count: 30 })).items;
+    const matchedPayment = paymentsList.find(
+      (p) =>
+        p.status === 'captured' &&
+        (p.notes?.transactionId === tx.id ||
+          p.notes?.orderId === tx.razorpayOrderId ||
+          p.order_id === tx.razorpayOrderId)
+    );
+
+    if (matchedPayment) {
+      const updated = await prisma.transaction.update({
+        where: { id: tx.id },
+        data: {
+          state: 'paid',
+          razorpayPaymentId: matchedPayment.id,
+        },
+      });
+
+      await prisma.auditLogRow.create({
+        data: {
+          correlationId: tx.correlationId,
+          transactionId: tx.id,
+          step: 'webhook_received',
+          decision: 'allow',
+          reason: `Payment verified directly from Razorpay (${matchedPayment.id}). Order marked as PAID.`,
+          actor: 'system',
+        },
+      });
+
+      return { ...tx, ...updated };
+    }
+
+    const order = await razorpay.orders.fetch(tx.razorpayOrderId);
+    if (order.status === 'paid' || (order.amount_paid && order.amount_paid > 0)) {
+      const payments = await razorpay.orders.fetchPayments(tx.razorpayOrderId);
+      const capturedPayment = payments?.items?.find((p) => p.status === 'captured') || payments?.items?.[0];
+      const paymentId = capturedPayment?.id || null;
+
+      const updated = await prisma.transaction.update({
+        where: { id: tx.id },
+        data: {
+          state: 'paid',
+          razorpayPaymentId: paymentId || tx.razorpayPaymentId,
+        },
+      });
+
+      await prisma.auditLogRow.create({
+        data: {
+          correlationId: tx.correlationId,
+          transactionId: tx.id,
+          step: 'webhook_received',
+          decision: 'allow',
+          reason: `Payment verified directly from Razorpay order (${paymentId || 'captured'}). Order marked as PAID.`,
+          actor: 'system',
+        },
+      });
+
+      return { ...tx, ...updated };
+    }
+  } catch (err) {
+    // Ignore fetch errors if offline or test mode
+  }
+
+  return tx;
+}
 
 await app.register(cors, {
   origin: true,
@@ -16,6 +89,83 @@ await app.register(cors, {
 });
 
 await app.register(rawBody, { field: 'rawBody', global: false, runFirst: true });
+
+// ---- Agent Provisioning Helper ----
+async function ensureAgentAndMandate({ agentId, agentName } = {}) {
+  let agent = null;
+
+  if (agentId) {
+    agent = await prisma.agent.findUnique({ where: { id: agentId } });
+  }
+
+  if (!agent && agentName) {
+    agent = await prisma.agent.findFirst({ where: { name: agentName } });
+  }
+
+  // Auto-provision if agent does not exist
+  if (!agent) {
+    const finalName = agentName || (agentId ? `Agent (${agentId})` : 'Claude Desktop');
+    const finalId = agentId || undefined;
+    const apiKeyHash = `key_${crypto.randomBytes(8).toString('hex')}`;
+
+    agent = await prisma.agent.create({
+      data: {
+        ...(finalId ? { id: finalId } : {}),
+        name: finalName,
+        apiKeyHash,
+        revoked: false,
+      },
+    });
+  }
+
+  // Find or create primary merchant
+  let merchant = await prisma.merchant.findFirst();
+  if (!merchant) {
+    merchant = await prisma.merchant.create({
+      data: {
+        name: 'Demo Grocery Store',
+        razorpayKeyId: process.env.RAZORPAY_KEY_ID || 'rzp_test_demo',
+        sellingPolicy: { refundWindowDays: 7 },
+      },
+    });
+  }
+
+  // Check mandate template
+  let template = await prisma.mandateTemplate.findFirst({ where: { merchantId: merchant.id } });
+  if (!template) {
+    template = await prisma.mandateTemplate.create({
+      data: {
+        merchantId: merchant.id,
+        maxPerTransaction: 200000,   // ₹2,000
+        dailyCap: 200000,            // ₹2,000
+        autoApproveThreshold: 50000, // ₹500
+        allowedCategories: ['grocery.staples', 'grocery.dairy', 'grocery.bakery', 'unknown'],
+      },
+    });
+  }
+
+  // Find or create active mandate for this agent
+  let mandate = await prisma.mandate.findFirst({
+    where: { agentId: agent.id, merchantId: merchant.id, active: true },
+  });
+
+  if (!mandate) {
+    mandate = await prisma.mandate.create({
+      data: {
+        agentId: agent.id,
+        merchantId: merchant.id,
+        signedPayload: JSON.stringify({ agentId: agent.id, merchantId: merchant.id, ...template }),
+        active: true,
+        maxPerTransaction: template.maxPerTransaction,
+        dailyCap: template.dailyCap,
+        autoApproveThreshold: template.autoApproveThreshold,
+        allowedCategories: template.allowedCategories,
+      },
+    });
+  }
+
+  return { agent, mandate, merchant };
+}
 
 // ---- Health check ----
 app.get('/health', async () => ({ status: 'ok' }));
@@ -26,11 +176,204 @@ app.get('/v1/catalog', async () => {
 });
 
 // ---- Mandates ----
-app.get('/v1/mandates', async () => {
+app.get('/v1/mandates', async (request) => {
+  const queryAgentId = request.query?.agentId || request.headers['x-agent-id'];
+  const queryAgentName = request.query?.agentName || request.headers['x-agent-name'];
+
+  if (queryAgentId || queryAgentName) {
+    const { mandate } = await ensureAgentAndMandate({
+      agentId: queryAgentId,
+      agentName: queryAgentName,
+    });
+    const found = await prisma.mandate.findMany({
+      where: { id: mandate.id, active: true },
+      include: { agent: true },
+    });
+    return found;
+  }
+
   return prisma.mandate.findMany({
     where: { active: true },
     include: { agent: true },
   });
+});
+
+// ---- Agents Management & Analytics ----
+app.post('/v1/agents/ensure', async (request) => {
+  const { id, name } = request.body || {};
+  const result = await ensureAgentAndMandate({ agentId: id, agentName: name });
+  return { success: true, ...result };
+});
+
+app.get('/v1/agents', async () => {
+  const agents = await prisma.agent.findMany({
+    orderBy: { createdAt: 'desc' },
+    include: {
+      mandates: {
+        where: { active: true },
+      },
+    },
+  });
+
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const agentsWithStats = await Promise.all(
+    agents.map(async (agent) => {
+      const mandateIds = agent.mandates.map((m) => m.id);
+
+      // All transactions for this agent
+      const rawTransactions = await prisma.transaction.findMany({
+        where: { mandateId: { in: mandateIds } },
+        include: { quote: true },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      // Synchronize any pending orders with Razorpay
+      const transactions = await Promise.all(
+        rawTransactions.map(async (t) => {
+          if (t.state === 'order_created' && t.razorpayOrderId) {
+            return syncTransactionFromRazorpay(t);
+          }
+          return t;
+        })
+      );
+
+      const totalTransactions = transactions.length;
+      const paidTransactions = transactions.filter((t) => t.state === 'paid');
+      const totalSpentPaise = paidTransactions.reduce((sum, t) => sum + (t.quote?.total || 0), 0);
+
+      const todayPaid = paidTransactions.filter((t) => new Date(t.createdAt) >= startOfDay);
+      const todaySpentPaise = todayPaid.reduce((sum, t) => sum + (t.quote?.total || 0), 0);
+
+      const pendingApprovalsCount = await prisma.pendingApproval.count({
+        where: {
+          decision: null,
+          transaction: { mandateId: { in: mandateIds } },
+        },
+      });
+
+      const primaryMandate = agent.mandates[0] || null;
+      const lastActiveAt = transactions[0]?.createdAt || agent.createdAt;
+
+      return {
+        id: agent.id,
+        name: agent.name,
+        revoked: agent.revoked,
+        createdAt: agent.createdAt,
+        mandate: primaryMandate,
+        stats: {
+          totalTransactions,
+          totalSpentPaise,
+          todaySpentPaise,
+          dailyCapPaise: primaryMandate?.dailyCap || 200000,
+          perTxnCapPaise: primaryMandate?.maxPerTransaction || 200000,
+          autoApproveThresholdPaise: primaryMandate?.autoApproveThreshold || 50000,
+          pendingApprovals: pendingApprovalsCount,
+          lastActiveAt,
+          recentTransactions: transactions.slice(0, 5),
+        },
+      };
+    })
+  );
+
+  return agentsWithStats;
+});
+
+app.get('/v1/agents/:id', async (request, reply) => {
+  const { id } = request.params;
+  const agent = await prisma.agent.findFirst({
+    where: { OR: [{ id }, { name: id }] },
+    include: {
+      mandates: {
+        include: {
+          transactions: {
+            include: {
+              quote: true,
+              pendingApproval: true,
+              auditLogs: { orderBy: { createdAt: 'asc' } },
+            },
+            orderBy: { createdAt: 'desc' },
+          },
+        },
+      },
+    },
+  });
+
+  if (!agent) {
+    return reply.code(404).send({ error: 'Agent not found' });
+  }
+
+  const rawTransactions = agent.mandates.flatMap((m) => m.transactions);
+
+  // Sync any pending orders with Razorpay in real-time
+  const allTransactions = await Promise.all(
+    rawTransactions.map(async (t) => {
+      if (t.state === 'order_created' && t.razorpayOrderId) {
+        return syncTransactionFromRazorpay(t);
+      }
+      return t;
+    })
+  );
+
+  allTransactions.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const paidTxns = allTransactions.filter((t) => t.state === 'paid');
+  const totalSpentPaise = paidTxns.reduce((sum, t) => sum + (t.quote?.total || 0), 0);
+  const todaySpentPaise = paidTxns
+    .filter((t) => new Date(t.createdAt) >= startOfDay)
+    .reduce((sum, t) => sum + (t.quote?.total || 0), 0);
+
+  const primaryMandate = agent.mandates[0] || null;
+
+  return {
+    ...agent,
+    stats: {
+      totalTransactions: allTransactions.length,
+      totalSpentPaise,
+      todaySpentPaise,
+      dailyCapPaise: primaryMandate?.dailyCap || 200000,
+      perTxnCapPaise: primaryMandate?.maxPerTransaction || 200000,
+      autoApproveThresholdPaise: primaryMandate?.autoApproveThreshold || 50000,
+      pendingApprovals: allTransactions.filter((t) => t.pendingApproval && !t.pendingApproval.decision).length,
+    },
+    transactions: allTransactions,
+  };
+});
+
+app.post('/v1/transactions/:id/sync', async (request, reply) => {
+  const { id } = request.params;
+  const tx = await prisma.transaction.findFirst({
+    where: { OR: [{ id }, { correlationId: id }, { razorpayOrderId: id }] },
+  });
+  if (!tx) {
+    return reply.code(404).send({ error: 'Transaction not found' });
+  }
+  const synced = await syncTransactionFromRazorpay(tx);
+  return { success: true, transaction: synced };
+});
+
+app.patch('/v1/agents/:id/status', async (request, reply) => {
+  const { id } = request.params;
+  const { revoked } = request.body || {};
+
+  const agent = await prisma.agent.findFirst({
+    where: { OR: [{ id }, { name: id }] },
+  });
+
+  if (!agent) {
+    return reply.code(404).send({ error: 'Agent not found' });
+  }
+
+  const updated = await prisma.agent.update({
+    where: { id: agent.id },
+    data: { revoked: Boolean(revoked) },
+  });
+
+  return { success: true, agent: updated };
 });
 
 app.post('/v1/quotes', async (request) => {
@@ -48,12 +391,20 @@ app.post('/v1/quotes', async (request) => {
 
 // ---- Pending Approvals ----
 app.get('/v1/pending-approvals', async (request) => {
-  const { status } = request.query || {};
+  const { status, agentId } = request.query || {};
   let where = {};
   if (status === 'pending' || !status) {
     where = { decision: null };
   } else if (status === 'decided') {
     where = { decision: { not: null } };
+  }
+
+  if (agentId) {
+    where.transaction = {
+      mandate: {
+        agentId,
+      },
+    };
   }
 
   const approvals = await prisma.pendingApproval.findMany({
@@ -234,6 +585,29 @@ app.get('/v1/audit/:correlationId', async (request, reply) => {
 });
 
 // ---- Transactions ----
+app.get('/v1/transactions', async (request) => {
+  const { agentId, state, limit = 50 } = request.query || {};
+  let where = {};
+  if (agentId) {
+    where.mandate = { agentId };
+  }
+  if (state) {
+    where.state = state;
+  }
+
+  return prisma.transaction.findMany({
+    where,
+    take: Number(limit),
+    orderBy: { createdAt: 'desc' },
+    include: {
+      quote: true,
+      mandate: { include: { agent: true } },
+      pendingApproval: true,
+      auditLogs: { orderBy: { createdAt: 'asc' } },
+    },
+  });
+});
+
 app.get('/v1/transactions/:id', async (request, reply) => {
   const { id } = request.params;
   const transaction = await prisma.transaction.findFirst({
@@ -274,45 +648,79 @@ app.post('/webhooks/razorpay', { config: { rawBody: true } }, async (request, re
   console.log('Verified webhook event:', event.event);
 
   if (event.event === 'payment.captured' || event.event === 'order.paid') {
-    const razorpayOrderId = event.payload.order.entity.id;
-    const razorpayPaymentId = event.payload.payment?.entity?.id;
+    const paymentEntity = event.payload.payment?.entity;
+    const orderEntity = event.payload.order?.entity;
 
-    const transaction = await prisma.transaction.update({
-      where: { razorpayOrderId },
-      data: { state: 'paid', razorpayPaymentId },
-    });
+    const notesTxId = paymentEntity?.notes?.transactionId;
+    const notesOrderId = paymentEntity?.notes?.orderId;
+    const paymentOrderId = paymentEntity?.order_id;
+    const orderId = orderEntity?.id;
+    const paymentId = paymentEntity?.id;
 
-    await prisma.auditLogRow.create({
-      data: {
-        correlationId: transaction.correlationId,
-        transactionId: transaction.id,
-        step: 'webhook_received',
-        decision: 'allow',
-        reason: 'payment captured and verified',
-        actor: 'system',
+    const matchingTx = await prisma.transaction.findFirst({
+      where: {
+        OR: [
+          ...(notesTxId ? [{ id: notesTxId }] : []),
+          ...(notesOrderId ? [{ razorpayOrderId: notesOrderId }] : []),
+          ...(orderId ? [{ razorpayOrderId: orderId }] : []),
+          ...(paymentOrderId ? [{ razorpayOrderId: paymentOrderId }] : []),
+        ],
       },
     });
+
+    if (matchingTx) {
+      const transaction = await prisma.transaction.update({
+        where: { id: matchingTx.id },
+        data: { state: 'paid', razorpayPaymentId: paymentId || matchingTx.razorpayPaymentId },
+      });
+
+      await prisma.auditLogRow.create({
+        data: {
+          correlationId: transaction.correlationId,
+          transactionId: transaction.id,
+          step: 'webhook_received',
+          decision: 'allow',
+          reason: `Payment captured and verified (${paymentId || 'payment.captured'}).`,
+          actor: 'system',
+        },
+      });
+    }
   }
 
   if (event.event === 'payment.failed') {
-    const razorpayOrderId = event.payload.payment.entity.order_id;
-    const errorReason = event.payload.payment.entity.error_reason || 'unknown_reason';
+    const paymentEntity = event.payload.payment?.entity;
+    const notesTxId = paymentEntity?.notes?.transactionId;
+    const notesOrderId = paymentEntity?.notes?.orderId;
+    const paymentOrderId = paymentEntity?.order_id;
+    const errorReason = paymentEntity?.error_reason || 'unknown_reason';
 
-    const transaction = await prisma.transaction.update({
-      where: { razorpayOrderId },
-      data: { state: 'failed' },
-    });
-
-    await prisma.auditLogRow.create({
-      data: {
-        correlationId: transaction.correlationId,
-        transactionId: transaction.id,
-        step: 'webhook_received',
-        decision: 'deny',
-        reason: `payment declined: ${errorReason}. no charge was made.`,
-        actor: 'system',
+    const matchingTx = await prisma.transaction.findFirst({
+      where: {
+        OR: [
+          ...(notesTxId ? [{ id: notesTxId }] : []),
+          ...(notesOrderId ? [{ razorpayOrderId: notesOrderId }] : []),
+          ...(paymentOrderId ? [{ razorpayOrderId: paymentOrderId }] : []),
+        ],
       },
     });
+
+    if (matchingTx) {
+      const transaction = await prisma.transaction.update({
+        where: { id: matchingTx.id },
+        data: { state: 'failed' },
+      });
+
+      await prisma.auditLogRow.create({
+        data: {
+          correlationId: transaction.correlationId,
+          transactionId: transaction.id,
+          step: 'webhook_received',
+          decision: 'deny',
+          reason: `Payment declined: ${errorReason}. No charge was made.`,
+          actor: 'system',
+        },
+      });
+    }
   }
 
   return reply.code(200).send({ received: true });
@@ -344,15 +752,37 @@ app.post('/v1/transactions/:id/refund', async (request) => {
 });
 
 app.post('/v1/payments', async (request, reply) => {
-  const { quoteId, mandateId } = request.body;
+  const { quoteId } = request.body || {};
+  let { mandateId, agentId, agentName } = request.body || {};
+
+  // Check headers if not in body
+  if (!agentId) agentId = request.headers['x-agent-id'];
+  if (!agentName) agentName = request.headers['x-agent-name'];
+
   const quote = await prisma.quote.findUnique({ where: { id: quoteId } });
   if (!quote) return reply.code(404).send({ error: 'quote not found' });
-  const mandate = await prisma.mandate.findUnique({ where: { id: mandateId } });
-  if (!mandate) return reply.code(404).send({ error: 'mandate not found' });
-  const agent = await prisma.agent.findUnique({ where: { id: mandate.agentId } });
+
+  // Dynamically ensure agent and mandate if mandateId is omitted or agent is provided
+  let mandate = null;
+  let agent = null;
+
+  if (mandateId) {
+    mandate = await prisma.mandate.findUnique({ where: { id: mandateId } });
+    if (mandate) {
+      agent = await prisma.agent.findUnique({ where: { id: mandate.agentId } });
+    }
+  }
+
+  if (!mandate || !agent) {
+    const ensured = await ensureAgentAndMandate({ agentId, agentName });
+    agent = ensured.agent;
+    mandate = ensured.mandate;
+    mandateId = mandate.id;
+  }
+
   const items = quote.items;
-  const firstProduct = await prisma.product.findFirst({ where: { sku: items[0].sku } });
-  const category = firstProduct?.category || 'unknown';
+  const firstProduct = await prisma.product.findFirst({ where: { sku: items[0]?.sku } });
+  const category = firstProduct?.category || 'grocery.staples';
 
   // Sum today's paid transactions for this mandate (for daily cap check)
   const startOfDay = new Date();
@@ -361,7 +791,7 @@ app.post('/v1/payments', async (request, reply) => {
     where: { mandateId, state: 'paid', createdAt: { gte: startOfDay } },
     include: { quote: true },
   });
-  const todaysCumulativeSpend = todaysTxns.reduce((sum, t) => sum + t.quote.total, 0);
+  const todaysCumulativeSpend = todaysTxns.reduce((sum, t) => sum + (t.quote?.total || 0), 0);
 
   // Check if merchant has had prior approved/paid transactions with this mandate
   const priorApprovedCount = await prisma.transaction.count({
@@ -416,6 +846,7 @@ app.post('/v1/payments', async (request, reply) => {
       status: 'awaiting_human_approval',
       reason: result.reason,
       transactionId: transaction.id,
+      correlationId,
     };
   }
 
@@ -432,8 +863,8 @@ app.post('/v1/payments', async (request, reply) => {
 
   const link = await createPaymentLink({
     amountPaise: quote.total,
-    description: 'ACM purchase',
-    notes: { orderId: order.id },
+    description: `ACM purchase by ${agent.name}`,
+    notes: { orderId: order.id, agentId: agent.id },
   });
 
   await prisma.auditLogRow.create({
@@ -442,7 +873,7 @@ app.post('/v1/payments', async (request, reply) => {
       transactionId: transaction.id,
       step: 'order_created',
       decision: 'allow',
-      reason: `Razorpay Order ${order.id} created. Payment link generated: ${link.short_url}`,
+      reason: `Razorpay Order ${order.id} created for ${agent.name}. Payment link generated: ${link.short_url}`,
       ruleId: null,
       actor: 'system',
     },
@@ -452,6 +883,7 @@ app.post('/v1/payments', async (request, reply) => {
     status: 'payment_link_created',
     paymentLink: link.short_url,
     transactionId: transaction.id,
+    correlationId,
   };
 });
 
