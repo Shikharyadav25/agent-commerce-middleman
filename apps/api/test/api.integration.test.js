@@ -100,6 +100,24 @@ describe('ACM API Integration Test Suite', () => {
         allowedCategories: ['grocery.bakery', 'grocery.dairy', 'grocery.staples'],
       },
     });
+
+    // Establish first approved/paid transaction to clear first-time merchant gate
+    const initQuote = await prisma.quote.create({
+      data: {
+        items: [{ sku: 'bread-white-test', qty: 1 }],
+        total: 1000,
+        expiresAt: new Date(Date.now() + 600000),
+      },
+    });
+    await prisma.transaction.create({
+      data: {
+        correlationId: `seed-init-${Date.now()}`,
+        mandateId: testMandate.id,
+        quoteId: initQuote.id,
+        state: 'paid',
+        razorpayPaymentId: `pay_seed_${Date.now()}`,
+      },
+    });
   });
 
   after(async () => {
