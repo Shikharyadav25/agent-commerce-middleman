@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Shield, CheckCircle2, History, Search, Bot, Terminal, ArrowUpRight } from 'lucide-react';
+import { Shield, CheckCircle2, History, Search, Bot, Terminal, ArrowUpRight, TrendingUp } from 'lucide-react';
 
 export default function Navbar() {
   const pathname = usePathname();
@@ -67,6 +67,18 @@ export default function Navbar() {
               >
                 <Bot className="w-4 h-4" />
                 <span>AI Agents</span>
+              </Link>
+
+              <Link
+                href="/growth"
+                className={`flex items-center space-x-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-all ${
+                  pathname.startsWith('/growth')
+                    ? 'bg-emerald-600/15 text-emerald-400 border border-emerald-500/30 shadow-sm shadow-emerald-500/10'
+                    : 'text-zinc-400 hover:text-white hover:bg-zinc-800/50'
+                }`}
+              >
+                <TrendingUp className="w-4 h-4 text-emerald-400" />
+                <span>Growth & AOV</span>
               </Link>
 
               <Link

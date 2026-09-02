@@ -554,4 +554,82 @@ describe('ACM API Integration Test Suite', () => {
     assert.equal(data2.status, 'denied');
     assert.ok(data2.reason.includes('daily cap'));
   });
+
+  test('GET /v1/growth/metrics returns AOV lift statistics', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/growth/metrics',
+    });
+    assert.equal(res.statusCode, 200);
+    const metrics = JSON.parse(res.payload);
+    assert.ok(typeof metrics.aovLiftPct === 'number');
+    assert.ok(metrics.formattedRevenue);
+    assert.ok(metrics.formattedAov);
+  });
+
+  test('POST /v1/acp/checkout executes Agentic Commerce Protocol session', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/acp/checkout',
+      payload: {
+        agent_id: 'claude-desktop',
+        items: [{ sku: 'bread-white-test', qty: 1 }],
+        metadata: { client: 'ACP-Test-Runner' },
+      },
+    });
+    assert.equal(res.statusCode, 200);
+    const acpData = JSON.parse(res.payload);
+    assert.equal(acpData.acp_protocol_version, '2026-04-preview');
+    assert.ok(acpData.session_id.startsWith('acp_sess_'));
+    assert.ok(acpData.order);
+    assert.ok(acpData.payment);
+  });
+
+  test('POST /v1/campaigns/apply applies bounded promotional discount', async () => {
+    const quote = await prisma.quote.create({
+      data: {
+        items: [{ sku: 'bread-white-test', qty: 1 }],
+        total: 10000, // ₹100
+        expiresAt: new Date(Date.now() + 600000),
+      },
+    });
+
+    // 10% discount on ₹100 is ₹10 (within 20% cap)
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/campaigns/apply',
+      payload: {
+        quoteId: quote.id,
+        discountPercent: 10,
+        campaignCode: 'SPRING_SAVINGS',
+      },
+    });
+    assert.equal(res.statusCode, 200);
+    const data = JSON.parse(res.payload);
+    assert.equal(data.success, true);
+    assert.equal(data.finalTotal, 9000); // ₹90
+  });
+
+  test('POST /v1/campaigns/apply rejects discount exceeding 20% policy cap', async () => {
+    const quote = await prisma.quote.create({
+      data: {
+        items: [{ sku: 'bread-white-test', qty: 1 }],
+        total: 10000,
+        expiresAt: new Date(Date.now() + 600000),
+      },
+    });
+
+    // 30% discount on ₹100 exceeds 20% ceiling
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/campaigns/apply',
+      payload: {
+        quoteId: quote.id,
+        discountPercent: 30,
+      },
+    });
+    assert.equal(res.statusCode, 400);
+    const data = JSON.parse(res.payload);
+    assert.ok(data.reason.includes('exceeds maximum'));
+  });
 });

@@ -6,6 +6,8 @@ import cors from '@fastify/cors';
 import { PrismaClient } from '@prisma/client';
 import { createOrder, createPaymentLink, razorpay } from './razorpay.js';
 import { evaluateTransaction } from '../../../packages/policy-engine/src/evaluate.js';
+import { checkDiscountCeiling } from '../../../packages/policy-engine/src/rules.js';
+import { getDynamicAddonSuggestions, computeGrowthMetrics } from './growth.js';
 
 const app = Fastify({ logger: true });
 const prisma = new PrismaClient();
@@ -740,16 +742,63 @@ app.post('/webhooks/razorpay', { config: { rawBody: true } }, async (request, re
   return reply.code(200).send({ received: true });
 });
 
-// ---- Add-ons & Refunds ----
+// ---- Growth, Add-ons & Campaigns ----
+app.get('/v1/growth/metrics', async () => {
+  return await computeGrowthMetrics();
+});
+
+app.post('/v1/growth/simulate', async (request) => {
+  const { count = 50 } = request.body || {};
+  const { runAgentGrowthSimulation } = await import('../../scripts/simulate-agents.js');
+  return await runAgentGrowthSimulation({ agentCount: Number(count) || 50 });
+});
+
 app.post('/v1/suggest-addons', async (request, reply) => {
-  const { skus } = request.body || {};
+  const { skus, merchantId } = request.body || {};
   if (!Array.isArray(skus) || skus.length === 0) {
     return [];
   }
-  const cartItems = await prisma.product.findMany({ where: { sku: { in: skus } } });
-  const pairedSkus = [...new Set(cartItems.flatMap(p => p.pairsWith))];
-  const suggestions = await prisma.product.findMany({ where: { sku: { in: pairedSkus } } });
-  return suggestions;
+  return await getDynamicAddonSuggestions({ skus, merchantId });
+});
+
+app.post('/v1/campaigns/apply', async (request, reply) => {
+  const { quoteId, discountPercent = 10, campaignCode = 'AGENT_WELCOME' } = request.body || {};
+  if (!quoteId) {
+    return reply.code(400).send({ error: 'quoteId is required' });
+  }
+
+  const quote = await prisma.quote.findUnique({ where: { id: quoteId } });
+  if (!quote) {
+    return reply.code(404).send({ error: 'quote not found' });
+  }
+
+  const discountPaise = Math.round((quote.total * discountPercent) / 100);
+  const check = checkDiscountCeiling(quote.total, discountPaise, 20); // max 20% cap
+
+  if (check.decision === 'deny') {
+    return reply.code(400).send({
+      error: 'Campaign discount exceeds authorized policy ceiling',
+      reason: check.reason,
+    });
+  }
+
+  const discountedTotal = Math.max(100, quote.total - discountPaise);
+  const updatedQuote = await prisma.quote.update({
+    where: { id: quote.id },
+    data: {
+      total: discountedTotal,
+    },
+  });
+
+  return {
+    success: true,
+    campaignCode,
+    originalTotal: quote.total,
+    discountPaise,
+    finalTotal: discountedTotal,
+    formattedSavings: `₹${(discountPaise / 100).toFixed(2)}`,
+    quote: updatedQuote,
+  };
 });
 
 app.post('/v1/transactions/:id/refund', async (request, reply) => {
@@ -801,6 +850,10 @@ app.post('/v1/payments', async (request, reply) => {
     });
   }
 
+  const items = quote.items;
+  const firstProduct = await prisma.product.findFirst({ where: { sku: items[0]?.sku } });
+  const category = firstProduct?.category || 'grocery.staples';
+
   // Dynamically ensure agent and mandate if mandateId is omitted or agent is provided
   let mandate = null;
   let agent = null;
@@ -815,13 +868,22 @@ app.post('/v1/payments', async (request, reply) => {
   if (!mandate || !agent) {
     const ensured = await ensureAgentAndMandate({ agentId, agentName });
     agent = ensured.agent;
-    mandate = ensured.mandate;
+
+    // If merchantId is present on product, search for merchant-specific mandate first
+    if (firstProduct?.merchantId) {
+      const merchantMandate = await prisma.mandate.findFirst({
+        where: { agentId: agent.id, merchantId: firstProduct.merchantId, active: true },
+      });
+      if (merchantMandate) {
+        mandate = merchantMandate;
+      }
+    }
+
+    if (!mandate) {
+      mandate = ensured.mandate;
+    }
     mandateId = mandate.id;
   }
-
-  const items = quote.items;
-  const firstProduct = await prisma.product.findFirst({ where: { sku: items[0]?.sku } });
-  const category = firstProduct?.category || 'grocery.staples';
 
   // Sum today's committed spend for this mandate (paid + in-flight order_created/approved/policy_checked)
   const startOfDay = new Date();
@@ -927,6 +989,66 @@ app.post('/v1/payments', async (request, reply) => {
     paymentLink: link.short_url,
     transactionId: transaction.id,
     correlationId,
+  };
+});
+
+// ---- ACP (Agentic Commerce Protocol) Adapter ----
+app.post('/v1/acp/checkout', async (request, reply) => {
+  const { agent_token, agent_id, merchant_id, items, metadata } = request.body || {};
+
+  const effectiveAgentId = agent_id || (agent_token ? `agent-${agent_token.substring(0, 8)}` : request.headers['x-agent-id'] || 'acp-client');
+  const ensured = await ensureAgentAndMandate({ agentId: effectiveAgentId });
+  const agent = ensured.agent;
+  const mandate = ensured.mandate;
+
+  if (!Array.isArray(items) || items.length === 0) {
+    return reply.code(400).send({ error: 'items array is required' });
+  }
+
+  const products = await prisma.product.findMany({ where: { sku: { in: items.map((i) => i.sku) } } });
+  if (products.length === 0) {
+    return reply.code(404).send({ error: 'No matching items found in merchant catalog' });
+  }
+
+  const total = items.reduce((sum, item) => {
+    const product = products.find((p) => p.sku === item.sku);
+    return sum + (product ? product.price * (Number(item.qty) || 1) : 0);
+  }, 0);
+
+  const quote = await prisma.quote.create({
+    data: { items, total, expiresAt: new Date(Date.now() + 10 * 60 * 1000) },
+  });
+
+  // Evaluate through deterministic payment gateway
+  const payRes = await app.inject({
+    method: 'POST',
+    url: '/v1/payments',
+    headers: { 'x-agent-id': agent.id, 'x-agent-name': agent.name },
+    payload: { quoteId: quote.id, mandateId: mandate.id },
+  });
+
+  const payData = JSON.parse(payRes.payload);
+
+  return {
+    acp_protocol_version: '2026-04-preview',
+    session_id: `acp_sess_${quote.id}`,
+    status: payData.status,
+    reason: payData.reason || null,
+    transaction_id: payData.transactionId || null,
+    correlation_id: payData.correlationId || null,
+    order: {
+      quote_id: quote.id,
+      currency: 'INR',
+      amount_paise: quote.total,
+      formatted_total: `₹${(quote.total / 100).toFixed(2)}`,
+      items,
+    },
+    payment: {
+      provider: 'razorpay',
+      payment_link: payData.paymentLink || null,
+      status: payData.status === 'payment_link_created' ? 'ready_to_pay' : 'pending_operator_approval',
+    },
+    metadata: metadata || {},
   };
 });
 

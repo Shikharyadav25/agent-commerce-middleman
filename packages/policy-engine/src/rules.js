@@ -42,3 +42,18 @@ export function decideGate(mandate, quoteTotal, isFirstTimeMerchant) {
   }
   return { decision: 'allow', reason: 'within auto-approve threshold', ruleId: 'gate_threshold' };
 }
+
+export function checkDiscountCeiling(originalTotal, discountPaise, maxDiscountPercent = 20) {
+  if (!discountPaise || discountPaise <= 0) {
+    return { decision: 'allow', reason: 'no discount requested', ruleId: 'discount_ceiling' };
+  }
+  const maxAllowedDiscount = Math.floor((originalTotal * maxDiscountPercent) / 100);
+  if (discountPaise > maxAllowedDiscount) {
+    return {
+      decision: 'deny',
+      reason: `discount ₹${discountPaise / 100} exceeds maximum authorized campaign discount cap of ${maxDiscountPercent}% (₹${maxAllowedDiscount / 100})`,
+      ruleId: 'discount_ceiling',
+    };
+  }
+  return { decision: 'allow', reason: 'discount within authorized campaign ceiling', ruleId: 'discount_ceiling' };
+}
