@@ -1,5 +1,4 @@
 import { PrismaClient } from '@prisma/client';
-import { app } from '../apps/api/src/index.js';
 
 const prisma = new PrismaClient();
 const API_BASE = process.env.ACM_API_URL || 'http://localhost:3000';
@@ -12,8 +11,10 @@ async function executeRequest({ method, url, headers = {}, payload = null }) {
       body: payload ? JSON.stringify(payload) : undefined,
     });
     return await res.json();
-  } catch {
-    // In-memory Fastify injection fallback when standalone script is run without open server
+  } catch (err) {
+    // In-memory fallback if standalone without running server
+    process.env.NODE_ENV = 'test';
+    const { app } = await import('../apps/api/src/index.js');
     await app.ready();
     const injected = await app.inject({
       method,
@@ -29,19 +30,19 @@ async function main() {
   console.log(`\n⚡ =========================================================================`);
   console.log(`🚀 MULTI-AGENT CONCURRENT TRANSACTIONS DEMO (Track 1 Live Proof)`);
   console.log(`   Simultaneously firing 3 autonomous agents with different risk profiles:`);
-  console.log(`   1. Agent Alpha   (Claude Desktop - Low Spender)    -> Expected: AUTO-APPROVED`);
-  console.log(`   2. Agent Beta    (ChatGPT - High-Value Tech Buyer)  -> Expected: GATED FOR HUMAN APPROVAL`);
-  console.log(`   3. Rogue Agent   (Revoked Infiltrator)              -> Expected: DENIED BY ZERO-TRUST`);
+  console.log(`   1. Food Delivery Booking Agent (Low Spender: ₹258)       -> Expected: AUTO-APPROVED`);
+  console.log(`   2. Movie Ticket Booking Agent  (Group IMAX + Snacks: ₹970) -> Expected: GATED FOR HUMAN REVIEW`);
+  console.log(`   3. Rogue Ticket Scalper Bot   (Revoked Fraud Infiltrator) -> Expected: DENIED BY ZERO-TRUST`);
   console.log(`=========================================================================\n`);
 
   // Ensure revoked agent exists
   await prisma.agent.upsert({
-    where: { id: 'rogue-revoked-bot' },
+    where: { id: 'rogue-ticket-scalper' },
     update: { revoked: true },
     create: {
-      id: 'rogue-revoked-bot',
-      name: 'Rogue Infiltrator Bot',
-      apiKeyHash: 'hash-rogue-key-999',
+      id: 'rogue-ticket-scalper',
+      name: 'Rogue Ticket Scalper Bot',
+      apiKeyHash: 'hash-scalper-key-999',
       revoked: true,
     },
   });
@@ -53,23 +54,23 @@ async function main() {
     executeRequest({
       method: 'POST',
       url: '/v1/quotes',
-      payload: { items: [{ sku: 'bread-white', qty: 1 }, { sku: 'butter-salted', qty: 1 }] },
+      payload: { items: [{ sku: 'zomato-garlic-breadsticks', qty: 1 }, { sku: 'swiggy-choco-lava-cake', qty: 1 }] },
     }),
     executeRequest({
       method: 'POST',
       url: '/v1/quotes',
-      payload: { items: [{ sku: 'fast-charger-65w', qty: 1 }, { sku: 'powerbank-20000mah', qty: 1 }] },
+      payload: { items: [{ sku: 'pvr-imax-3d-ticket', qty: 2 }, { sku: 'pvr-pepsi-twin-fountain', qty: 1 }] },
     }),
     executeRequest({
       method: 'POST',
       url: '/v1/quotes',
-      payload: { items: [{ sku: 'bread-white', qty: 1 }] },
+      payload: { items: [{ sku: 'pvr-imax-3d-ticket', qty: 1 }] },
     }),
   ]);
 
-  console.log(`   • Agent Alpha Quote: ₹${(q1.total / 100).toFixed(2)} (ID: ${q1.id})`);
-  console.log(`   • Agent Beta  Quote: ₹${(q2.total / 100).toFixed(2)} (ID: ${q2.id})`);
-  console.log(`   • Rogue Agent Quote: ₹${(q3.total / 100).toFixed(2)} (ID: ${q3.id})`);
+  console.log(`   • Food Delivery Agent (Zomato/Swiggy) Quote: ₹${(q1.total / 100).toFixed(2)} (ID: ${q1.id})`);
+  console.log(`   • Movie Ticket Agent  (PVR & IMAX)    Quote: ₹${(q2.total / 100).toFixed(2)} (ID: ${q2.id})`);
+  console.log(`   • Rogue Scalper Bot   (Unauthorized)  Quote: ₹${(q3.total / 100).toFixed(2)} (ID: ${q3.id})`);
 
   // Step 2: Fire concurrent payment evaluations
   console.log('\n💳 Step 2: Firing Simultaneous Payment Submissions to Gateway...');
@@ -79,19 +80,19 @@ async function main() {
     executeRequest({
       method: 'POST',
       url: '/v1/payments',
-      headers: { 'x-agent-id': 'claude-desktop', 'x-agent-name': 'Claude Desktop' },
+      headers: { 'x-agent-id': 'food-delivery-agent', 'x-agent-name': 'Food Delivery Booking Agent (Zomato / Swiggy)' },
       payload: { quoteId: q1.id },
     }),
     executeRequest({
       method: 'POST',
       url: '/v1/payments',
-      headers: { 'x-agent-id': 'chatgpt-agent', 'x-agent-name': 'ChatGPT Assistant' },
+      headers: { 'x-agent-id': 'movie-ticket-agent', 'x-agent-name': 'Movie Ticket Booking Agent (PVR INOX & BookMyShow)' },
       payload: { quoteId: q2.id },
     }),
     executeRequest({
       method: 'POST',
       url: '/v1/payments',
-      headers: { 'x-agent-id': 'rogue-revoked-bot', 'x-agent-name': 'Rogue Infiltrator Bot' },
+      headers: { 'x-agent-id': 'rogue-ticket-scalper', 'x-agent-name': 'Rogue Ticket Scalper Bot' },
       payload: { quoteId: q3.id },
     }),
   ]);
@@ -100,28 +101,27 @@ async function main() {
 
   console.log(`\n🎯 CONCURRENT EXECUTION OUTCOME (Resolved in ${elapsedMs}ms):`);
   console.log(`-------------------------------------------------------------------------`);
-  console.log(`1. Agent Alpha (Claude Desktop):`);
+  console.log(`1. Food Delivery Booking Agent (Zomato / Swiggy):`);
   console.log(`   Status   : \x1b[32m\x1b[1m${p1.status}\x1b[0m`);
   console.log(`   Pay Link : ${p1.paymentLink || 'N/A'}`);
   console.log(`   Decision : Permitted autonomously (< ₹500 auto-approve threshold)\n`);
 
-  console.log(`2. Agent Beta (ChatGPT Assistant):`);
+  console.log(`2. Movie Ticket Booking Agent (PVR INOX & BookMyShow):`);
   console.log(`   Status   : \x1b[33m\x1b[1m${p2.status}\x1b[0m`);
   console.log(`   Reason   : ${p2.reason}`);
   console.log(`   Decision : Gated for Human Review (Transaction: ${p2.transactionId})\n`);
 
-  console.log(`3. Rogue Agent (Revoked Infiltrator):`);
+  console.log(`3. Rogue Ticket Scalper Bot:`);
   console.log(`   Status   : \x1b[31m\x1b[1m${p3.status}\x1b[0m`);
   console.log(`   Reason   : ${p3.reason}`);
   console.log(`   Decision : Blocked by deterministic zero-trust policy engine\n`);
   console.log(`-------------------------------------------------------------------------`);
-  console.log(`✨ Open http://localhost:3001/approvals to approve/decline Agent Beta's order!`);
+  console.log(`✨ Open http://localhost:3001/approvals to approve/decline the Movie Ticket order!`);
   console.log(`✨ Open http://localhost:3001/agents to inspect live agent balances.\n`);
 }
 
 main()
   .catch((err) => console.error('Demo error:', err))
   .finally(async () => {
-    await app.close();
     await prisma.$disconnect();
   });

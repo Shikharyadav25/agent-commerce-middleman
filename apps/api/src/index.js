@@ -200,6 +200,78 @@ app.get('/v1/mandates', async (request) => {
   });
 });
 
+// ---- Multi-Protocol Agent Routes (OpenAI, LangChain, CrewAI, AutoGen) ----
+app.get('/v1/agent-tools', async () => {
+  return {
+    description: 'ACM Universal Multi-Protocol Tool Definitions for Autonomous AI Agents',
+    supported_protocols: [
+      'Model Context Protocol (MCP)',
+      'OpenAI Function Calling (ChatGPT / Assistants API)',
+      'LangChain / LangGraph Python & JS Tools',
+      'Agentic Commerce Protocol (ACP - /v1/acp/checkout)',
+      'Google AP2 Signed Intent Mandates',
+      'REST / OpenAPI 3.0 Standard Endpoints',
+    ],
+    openai_tools: [
+      {
+        type: 'function',
+        function: {
+          name: 'order_product',
+          description: 'Search store catalog, generate deterministic quote, and execute order under active zero-trust mandate.',
+          parameters: {
+            type: 'object',
+            properties: {
+              query: { type: 'string', description: 'Item name or SKU (e.g. "pvr imax ticket", "paneer pizza", "bread")' },
+              quantity: { type: 'number', description: 'Quantity to purchase (default: 1)' },
+            },
+            required: ['query'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'get_quote',
+          description: 'Get deterministic price quote, item breakdown, and cryptographic SHA-256 quote hash.',
+          parameters: {
+            type: 'object',
+            properties: {
+              items: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    sku: { type: 'string' },
+                    qty: { type: 'number' },
+                  },
+                  required: ['sku', 'qty'],
+                },
+              },
+            },
+            required: ['items'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'initiate_payment',
+          description: 'Submit quote to 6-stage in-flight security pipeline and create Razorpay payment order.',
+          parameters: {
+            type: 'object',
+            properties: {
+              quoteId: { type: 'string', description: 'Quote ID from get_quote' },
+              deliveryPincode: { type: 'string', description: 'Delivery pincode' },
+              proofOfAuthority: { type: 'string', description: 'Optional AP2 cryptographic user authorization token' },
+            },
+            required: ['quoteId'],
+          },
+        },
+      },
+    ],
+  };
+});
+
 // ---- Agents Management & Analytics ----
 app.post('/v1/agents/ensure', async (request) => {
   const { id, name } = request.body || {};
@@ -821,7 +893,12 @@ app.post('/v1/transactions/:id/refund', async (request, reply) => {
 });
 
 app.post('/v1/payments', async (request, reply) => {
-  const { quoteId } = request.body || {};
+  const {
+    quoteId,
+    proofOfAuthority,
+    userIntentPrompt,
+    deliveryPincode,
+  } = request.body || {};
   let { mandateId, agentId, agentName } = request.body || {};
 
   if (!quoteId) {
@@ -851,7 +928,14 @@ app.post('/v1/payments', async (request, reply) => {
   }
 
   const items = quote.items;
-  const firstProduct = await prisma.product.findFirst({ where: { sku: items[0]?.sku } });
+  const productSkus = items.map((i) => i.sku);
+  const products = await prisma.product.findMany({ where: { sku: { in: productSkus } } });
+  const catalogPriceMap = {};
+  for (const p of products) {
+    catalogPriceMap[p.sku] = p.price;
+  }
+
+  const firstProduct = products[0] || (await prisma.product.findFirst({ where: { sku: items[0]?.sku } }));
   const category = firstProduct?.category || 'grocery.staples';
 
   // Dynamically ensure agent and mandate if mandateId is omitted or agent is provided
@@ -898,6 +982,29 @@ app.post('/v1/payments', async (request, reply) => {
   });
   const todaysCumulativeSpend = todaysTxns.reduce((sum, t) => sum + (t.quote?.total || 0), 0);
 
+  // Fetch recent transactions in past 10 mins for velocity & anti-smurfing
+  const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+  const recentTransactions = await prisma.transaction.findMany({
+    where: {
+      mandate: { agentId: agent.id },
+      createdAt: { gte: tenMinutesAgo },
+    },
+    include: { quote: true },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  const recentTimestamps = recentTransactions.map((t) => t.createdAt);
+
+  // Fetch recent policy denials in past 5 mins for autonomous circuit breaker
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+  const recentDenials = await prisma.auditLogRow.count({
+    where: {
+      decision: 'deny',
+      createdAt: { gte: fiveMinutesAgo },
+      transaction: { mandate: { agentId: agent.id } },
+    },
+  });
+
   // Check if merchant has had prior approved/paid transactions with this mandate
   const priorApprovedCount = await prisma.transaction.count({
     where: {
@@ -917,12 +1024,35 @@ app.post('/v1/payments', async (request, reply) => {
     quoteTotal: quote.total,
     todaysCumulativeSpend,
     isFirstTimeMerchant,
+    items: quote.items,
+    catalogPriceMap,
+    recentTransactions,
+    recentTimestamps,
+    recentDenialCount: recentDenials,
+    deliveryPincode,
+    allowedPincodes: ['560001', '560038', '110001', '400001'],
+    proofOfAuthority: proofOfAuthority || request.headers['x-proof-of-authority'] || null,
+    userIntentPrompt: userIntentPrompt || request.headers['x-intent-prompt'] || null,
+    expectedQuoteHash: request.body?.quoteHash || null,
     correlationId,
     writeAuditRow: (row) => prisma.auditLogRow.create({ data: row }),
   });
 
   if (result.finalDecision === 'deny') {
-    return { status: 'denied', reason: result.reason };
+    if (result.shouldRevokeAgent || result.isCanaryTriggered) {
+      await prisma.agent.update({
+        where: { id: agent.id },
+        data: { revoked: true },
+      });
+    }
+    return {
+      status: 'denied',
+      reason: result.reason,
+      riskScore: result.riskScore,
+      riskTier: result.riskTier,
+      latencyMs: result.latencyMs,
+      correlationId,
+    };
   }
 
   const transaction = await prisma.transaction.create({
@@ -952,13 +1082,17 @@ app.post('/v1/payments', async (request, reply) => {
       reason: result.reason,
       transactionId: transaction.id,
       correlationId,
+      riskScore: result.riskScore,
+      riskTier: result.riskTier,
+      latencyMs: result.latencyMs,
+      quoteHash: result.quoteHash,
     };
   }
 
   const order = await createOrder({
     quoteId: quote.id,
     amountPaise: quote.total,
-    notes: { transactionId: transaction.id, agentId: agent.id, mandateId },
+    notes: { transactionId: transaction.id, agentId: agent.id, mandateId, quoteHash: result.quoteHash },
   });
 
   await prisma.transaction.update({
@@ -969,7 +1103,7 @@ app.post('/v1/payments', async (request, reply) => {
   const link = await createPaymentLink({
     amountPaise: quote.total,
     description: `ACM purchase by ${agent.name}`,
-    notes: { orderId: order.id, agentId: agent.id },
+    notes: { orderId: order.id, agentId: agent.id, quoteHash: result.quoteHash },
   });
 
   await prisma.auditLogRow.create({
@@ -989,6 +1123,10 @@ app.post('/v1/payments', async (request, reply) => {
     paymentLink: link.short_url,
     transactionId: transaction.id,
     correlationId,
+    riskScore: result.riskScore,
+    riskTier: result.riskTier,
+    latencyMs: result.latencyMs,
+    quoteHash: result.quoteHash,
   };
 });
 

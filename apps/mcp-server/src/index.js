@@ -45,9 +45,9 @@ async function safeFetch(url, options = {}) {
 
 server.tool(
   'order_product',
-  'PRIMARY TOOL: Use this tool to instantly purchase or order groceries/products whenever the user asks to buy or order anything (e.g. "buy bread", "order 2 milk", "buy eggs", "buy ghee"). Automatically searches the store catalog, gets a price quote, and initiates payment under the active mandate, returning the Razorpay checkout link.',
+  'PRIMARY TOOL: Use this tool to purchase or order tickets, meals, electronics, rides, or groceries whenever the user asks to buy anything (e.g. "book PVR IMAX ticket", "order Smoky Paneer Pizza on Swiggy", "buy GaN 65W charger on Amazon", "book Uber airport cab", "order bread on Blinkit"). Searches the merchant catalog, gets a deterministic price quote, and executes payment under active zero-trust mandate, returning the Razorpay checkout link.',
   {
-    query: z.string().describe('Item name or SKU to purchase (e.g. "bread", "milk", "eggs", "ghee", "toor dal", "rice")'),
+    query: z.string().describe('Item name or SKU to purchase (e.g. "pvr imax ticket", "paneer pizza", "bread", "charger", "power bank", "uber cab", "milk")'),
     quantity: z.number().default(1).describe('Quantity to purchase (defaults to 1)'),
   },
   async ({ query, quantity = 1 }) => {
@@ -158,7 +158,7 @@ server.tool(
   {
     items: z.array(
       z.object({
-        sku: z.string().describe('The product SKU identifier (e.g. bread-white, milk-1l, eggs-dozen)'),
+        sku: z.string().describe('The product SKU identifier (e.g. pvr-imax-3d-ticket, swiggy-smoky-paneer-pizza, blinkit-artisan-bread, voltcharge-gan-65w, uber-premier-airport-cab)'),
         qty: z.number().describe('Quantity of the item to purchase'),
       })
     ),

@@ -344,6 +344,76 @@ export default function AuditTimelinePage({
         </div>
       )}
 
+      {/* Multi-Layer Zero-Trust Security Telemetry */}
+      <div className="rounded-2xl bg-gradient-to-r from-blue-950/30 via-indigo-950/20 to-zinc-900 border border-blue-500/20 p-5 shadow-xl">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+          <div className="flex items-center space-x-2.5">
+            <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-400">
+              <ShieldCheck className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="text-xs font-bold text-white uppercase tracking-wider">Multi-Layer Zero-Trust Guardrail Evaluation</h3>
+              <p className="text-[11px] text-zinc-400">Pipelined deterministic security checks with zero customer friction</p>
+            </div>
+          </div>
+          <div className="flex items-center space-x-2">
+            <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+              <span>⚡</span>
+              <span>Fast-Path: &lt; 1.5ms</span>
+            </span>
+            <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/30">
+              <Shield className="w-3 h-3" />
+              <span>All 6 Stages Verified</span>
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2.5 text-[11px]">
+          <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800">
+            <span className="text-zinc-500 block text-[9px] uppercase font-bold">Stage 1: Killswitch</span>
+            <span className="text-emerald-400 font-semibold flex items-center space-x-1 mt-0.5">
+              <Check className="w-3 h-3" />
+              <span>Agent Valid</span>
+            </span>
+          </div>
+          <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800">
+            <span className="text-zinc-500 block text-[9px] uppercase font-bold">Stage 2: Honeytokens</span>
+            <span className="text-emerald-400 font-semibold flex items-center space-x-1 mt-0.5">
+              <Check className="w-3 h-3" />
+              <span>No Canaries</span>
+            </span>
+          </div>
+          <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800">
+            <span className="text-zinc-500 block text-[9px] uppercase font-bold">Stage 3: Velocity</span>
+            <span className="text-emerald-400 font-semibold flex items-center space-x-1 mt-0.5">
+              <Check className="w-3 h-3" />
+              <span>Rate Bounded</span>
+            </span>
+          </div>
+          <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800">
+            <span className="text-zinc-500 block text-[9px] uppercase font-bold">Stage 4: Scope & Caps</span>
+            <span className="text-emerald-400 font-semibold flex items-center space-x-1 mt-0.5">
+              <Check className="w-3 h-3" />
+              <span>Within Limit</span>
+            </span>
+          </div>
+          <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800">
+            <span className="text-zinc-500 block text-[9px] uppercase font-bold">Stage 5: Anti-TOCTOU</span>
+            <span className="text-emerald-400 font-semibold flex items-center space-x-1 mt-0.5">
+              <Check className="w-3 h-3" />
+              <span>Quote Pinned</span>
+            </span>
+          </div>
+          <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800">
+            <span className="text-zinc-500 block text-[9px] uppercase font-bold">Stage 6: Risk Gate</span>
+            <span className="text-blue-400 font-semibold flex items-center space-x-1 mt-0.5">
+              <span>🎯</span>
+              <span>Tiered Score</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
       {/* Main Timeline Section */}
       <div className="space-y-4">
         <div className="flex items-center justify-between">

@@ -111,11 +111,11 @@ export default function GrowthPage() {
   };
 
   const topAffinities = [
-    { base: 'White Bread Loaf (Artisan)', baseCategory: 'Bakery', addon: 'Farmhouse Salted Butter 200g', addonCategory: 'Dairy', confidence: '88%', aovImpact: '+₹65.00', status: 'Active' },
-    { base: 'GaN 65W Fast Charger', baseCategory: 'Electronics', addon: 'UltraDurable Braided USB-C Cable', addonCategory: 'Accessories', confidence: '92%', aovImpact: '+₹499.00', status: 'Active' },
-    { base: 'Royal Basmati Rice 5kg', baseCategory: 'Staples', addon: 'Toor Dal 1kg + A2 Cow Ghee', addonCategory: 'Pantry Bundle', confidence: '84%', aovImpact: '+₹655.00', status: 'Active' },
-    { base: 'AcousticAir Pro ANC Earbuds', baseCategory: 'Audio', addon: 'Rugged Silicone Case w/ Clip', addonCategory: 'Protection', confidence: '76%', aovImpact: '+₹399.00', status: 'Active' },
-    { base: 'Trauma First Aid Kit Pro', baseCategory: 'Pharmacy', addon: 'RapidHeal Antiseptic Spray', addonCategory: 'First Aid', confidence: '82%', aovImpact: '+₹249.00', status: 'Active' },
+    { base: 'PVR IMAX 3D Recliner Ticket', baseCategory: '🎬 Movie (PVR & IMAX)', addon: 'Jumbo Caramel Popcorn + Twin Pepsi Combo', addonCategory: 'Cinema Concessions', confidence: '94%', aovImpact: '+₹460.00', status: 'Active' },
+    { base: 'Smoky Paneer Feast Pizza (Swiggy)', baseCategory: '🍕 Food (Zomato & Swiggy)', addon: 'Cheesy Garlic Breadsticks + Choco Lava Cake', addonCategory: 'Appetizers & Dessert', confidence: '89%', aovImpact: '+₹258.00', status: 'Active' },
+    { base: 'Artisan White Bread (Blinkit 10-Min)', baseCategory: '🛒 Quick Commerce (Blinkit & Zepto)', addon: 'Amul Butter 200g + Organic Brown Eggs', addonCategory: 'Breakfast Staples', confidence: '88%', aovImpact: '+₹160.00', status: 'Active' },
+    { base: 'VoltCharge GaN 65W Charger (Croma)', baseCategory: '⚡ Tech (Amazon & Croma)', addon: 'AmazonBasics 100W Braided USB-C Cable', addonCategory: 'Cables & Power', confidence: '92%', aovImpact: '+₹499.00', status: 'Active' },
+    { base: 'Uber Premier Airport Cab Ride', baseCategory: '✈️ Travel (MakeMyTrip & Uber)', addon: 'MMT Delay Protection + In-Flight Meal', addonCategory: 'Travel Protection', confidence: '82%', aovImpact: '+₹549.00', status: 'Active' },
   ];
 
   return (

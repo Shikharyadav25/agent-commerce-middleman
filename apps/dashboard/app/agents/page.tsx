@@ -53,9 +53,10 @@ export default function AgentsHubPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedTrack, setSelectedTrack] = useState('all');
   const [isSimulateOpen, setIsSimulateOpen] = useState(false);
-  const [simAgentName, setSimAgentName] = useState('ChatGPT Assistant');
-  const [simSku, setSimSku] = useState('bread-white');
+  const [simAgentName, setSimAgentName] = useState('Movie Ticket Booking Agent (PVR INOX)');
+  const [simSku, setSimSku] = useState('pvr-imax-3d-ticket');
   const [simQty, setSimQty] = useState(1);
   const [simulating, setSimulating] = useState(false);
   const [simResult, setSimResult] = useState<any>(null);
@@ -104,11 +105,10 @@ export default function AgentsHubPage() {
         },
         body: JSON.stringify({
           quoteId: quote.id,
-          agentName: simAgentName,
         }),
       });
-      const payData = await payRes.json();
-      setSimResult({ quote, payData });
+      const pay = await payRes.json();
+      setSimResult({ quote, pay });
       fetchAgents();
     } catch (err: any) {
       setSimResult({ error: err.message });
@@ -117,43 +117,129 @@ export default function AgentsHubPage() {
     }
   };
 
-  const filteredAgents = agents.filter((agent) =>
-    agent.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    agent.id.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const getAgentTrackInfo = (name: string, id: string) => {
+    const n = (name + ' ' + id).toLowerCase();
+    if (n.includes('pvr') || n.includes('movie') || n.includes('cinema') || n.includes('imax') || n.includes('ticket')) {
+      return {
+        trackId: 'movie',
+        label: 'Movie & Entertainment',
+        platforms: 'PVR INOX • IMAX • BookMyShow',
+        badgeColor: 'bg-fuchsia-500/10 text-fuchsia-400 border-fuchsia-500/30',
+        icon: '🎬',
+      };
+    }
+    if (n.includes('food') || n.includes('zomato') || n.includes('swiggy') || n.includes('delivery') || n.includes('pizza')) {
+      return {
+        trackId: 'food',
+        label: 'Food Delivery & Dining',
+        platforms: 'Zomato • Swiggy • Gourmet Kitchen',
+        badgeColor: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+        icon: '🍕',
+      };
+    }
+    if (n.includes('grocery') || n.includes('blinkit') || n.includes('zepto') || n.includes('instamart') || n.includes('quick')) {
+      return {
+        trackId: 'grocery',
+        label: 'Quick Commerce & Grocery',
+        platforms: 'Blinkit • Zepto • Swiggy Instamart',
+        badgeColor: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+        icon: '🛒',
+      };
+    }
+    if (n.includes('tech') || n.includes('amazon') || n.includes('croma') || n.includes('gadget') || n.includes('hardware')) {
+      return {
+        trackId: 'electronics',
+        label: 'Electronics & Smart Hardware',
+        platforms: 'Amazon • Croma Retail • VoltTech',
+        badgeColor: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30',
+        icon: '⚡',
+      };
+    }
+    if (n.includes('travel') || n.includes('uber') || n.includes('mmt') || n.includes('makemytrip') || n.includes('cab')) {
+      return {
+        trackId: 'travel',
+        label: 'Travel & Cab Mobility',
+        platforms: 'MakeMyTrip • Uber Mobility',
+        badgeColor: 'bg-blue-500/10 text-blue-400 border-blue-500/30',
+        icon: '✈️',
+      };
+    }
+    return {
+      trackId: 'all',
+      label: 'Universal Assistant',
+      platforms: 'Cross-Track MCP Protocol',
+      badgeColor: 'bg-purple-500/10 text-purple-400 border-purple-500/30',
+      icon: '🤖',
+    };
+  };
+
+  const filteredAgents = agents.filter((agent) => {
+    const matchesSearch =
+      agent.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      agent.id.toLowerCase().includes(searchQuery.toLowerCase());
+
+    if (!matchesSearch) return false;
+    if (selectedTrack === 'all') return true;
+
+    const trackInfo = getAgentTrackInfo(agent.name, agent.id);
+    return trackInfo.trackId === selectedTrack || trackInfo.trackId === 'all';
+  });
 
   const totalAgents = agents.length;
   const totalLifetimeSpend = agents.reduce((sum, a) => sum + (a.stats?.totalSpentPaise || 0), 0);
   const totalTodaySpend = agents.reduce((sum, a) => sum + (a.stats?.todaySpentPaise || 0), 0);
   const totalPendingApprovals = agents.reduce((sum, a) => sum + (a.stats?.pendingApprovals || 0), 0);
 
+  const tracksList = [
+    { id: 'all', label: 'All Real-World Tracks', icon: '🌟' },
+    { id: 'movie', label: 'PVR & IMAX (Movie Tickets)', icon: '🎬' },
+    { id: 'food', label: 'Zomato & Swiggy (Food Delivery)', icon: '🍕' },
+    { id: 'grocery', label: 'Blinkit & Zepto (Quick Commerce)', icon: '🛒' },
+    { id: 'electronics', label: 'Amazon & Croma (Electronics)', icon: '⚡' },
+    { id: 'travel', label: 'MakeMyTrip & Uber (Travel)', icon: '✈️' },
+  ];
+
   const getAgentTheme = (name: string) => {
     const n = name.toLowerCase();
-    if (n.includes('claude')) {
+    if (n.includes('movie') || n.includes('cinema') || n.includes('ticket') || n.includes('cineplex')) {
+      return {
+        bg: 'from-fuchsia-500/20 to-purple-600/10 border-fuchsia-500/30 text-fuchsia-300',
+        badge: 'bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/40',
+        gradient: 'from-fuchsia-500 to-purple-600',
+      };
+    }
+    if (n.includes('food') || n.includes('delivery') || n.includes('restaurant') || n.includes('pizza') || n.includes('dinner')) {
       return {
         bg: 'from-amber-500/20 to-orange-600/10 border-amber-500/30 text-amber-300',
         badge: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
         gradient: 'from-amber-500 to-orange-600',
       };
     }
-    if (n.includes('gpt') || n.includes('openai') || n.includes('chatgpt')) {
+    if (n.includes('grocery') || n.includes('pantry') || n.includes('mart') || n.includes('market')) {
       return {
         bg: 'from-emerald-500/20 to-teal-600/10 border-emerald-500/30 text-emerald-300',
         badge: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
         gradient: 'from-emerald-500 to-teal-600',
       };
     }
-    if (n.includes('gemini')) {
+    if (n.includes('tech') || n.includes('gadget') || n.includes('hardware') || n.includes('volt')) {
       return {
-        bg: 'from-blue-500/20 to-indigo-600/10 border-blue-500/30 text-blue-300',
-        badge: 'bg-blue-500/20 text-blue-300 border-blue-500/40',
-        gradient: 'from-blue-500 to-indigo-600',
+        bg: 'from-cyan-500/20 to-blue-600/10 border-cyan-500/30 text-cyan-300',
+        badge: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40',
+        gradient: 'from-cyan-500 to-blue-600',
+      };
+    }
+    if (n.includes('claude')) {
+      return {
+        bg: 'from-orange-500/20 to-amber-600/10 border-orange-500/30 text-orange-300',
+        badge: 'bg-orange-500/20 text-orange-300 border-orange-500/40',
+        gradient: 'from-orange-500 to-amber-600',
       };
     }
     return {
-      bg: 'from-purple-500/20 to-pink-600/10 border-purple-500/30 text-purple-300',
-      badge: 'bg-purple-500/20 text-purple-300 border-purple-500/40',
-      gradient: 'from-purple-500 to-pink-600',
+      bg: 'from-indigo-500/20 to-purple-600/10 border-indigo-500/30 text-indigo-300',
+      badge: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40',
+      gradient: 'from-indigo-500 to-purple-600',
     };
   };
 
@@ -220,7 +306,7 @@ export default function AgentsHubPage() {
                 type="text"
                 value={simAgentName}
                 onChange={(e) => setSimAgentName(e.target.value)}
-                placeholder="e.g. ChatGPT Assistant, Gemini Pro, AutoGPT"
+                placeholder="e.g. Movie Ticket Booking Agent, Food Delivery Booking Agent"
                 className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-xs text-zinc-100 focus:outline-none focus:border-blue-500"
                 required
               />
@@ -232,12 +318,29 @@ export default function AgentsHubPage() {
                 onChange={(e) => setSimSku(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-xs text-zinc-100 focus:outline-none focus:border-blue-500"
               >
-                <option value="bread-white">White bread loaf (₹50) - Auto-Approved</option>
-                <option value="milk-1l">Full-cream milk, 1L (₹70) - Auto-Approved</option>
-                <option value="eggs-dozen">Eggs, dozen (₹90) - Auto-Approved</option>
-                <option value="toor-dal-1kg">Toor dal, 1kg (₹180) - Auto-Approved</option>
-                <option value="ghee-500ml">Pure ghee, 500ml (₹450) - Auto-Approved</option>
-                <option value="rice-basmati-5kg">Basmati rice, 5kg (₹650) - Gated Review (&gt;₹500)</option>
+                <optgroup label="🎬 Track 1: PVR & IMAX (Movie Tickets)">
+                  <option value="pvr-imax-3d-ticket">PVR IMAX 3D Ticket (₹450) - Auto-Approved</option>
+                  <option value="pvr-caramel-popcorn-tub">PVR Jumbo Caramel Popcorn (₹280) - Auto-Approved</option>
+                  <option value="pvr-nachos-salsa-combo">PVR Nachos &amp; Hot Cheese Dip (₹240) - Auto-Approved</option>
+                </optgroup>
+                <optgroup label="🍕 Track 2: Zomato & Swiggy (Food Delivery)">
+                  <option value="swiggy-smoky-paneer-pizza">Wood-Fired Paneer Feast Pizza (₹399) - Auto-Approved</option>
+                  <option value="zomato-garlic-breadsticks">Cheesy Garlic Breadsticks (₹149) - Auto-Approved</option>
+                  <option value="swiggy-choco-lava-cake">Molten Choco Lava Cake (₹109) - Auto-Approved</option>
+                </optgroup>
+                <optgroup label="🛒 Track 3: Blinkit & Zepto (Quick Commerce)">
+                  <option value="blinkit-artisan-bread">Artisan White Bread (₹45) - Auto-Approved</option>
+                  <option value="blinkit-amul-butter">Amul Farmhouse Butter 200g (₹65) - Auto-Approved</option>
+                  <option value="blinkit-basmati-rice-5kg">Basmati Rice 5kg (₹580) - Gated Review (&gt;₹500)</option>
+                </optgroup>
+                <optgroup label="⚡ Track 4: Amazon & Croma (Electronics)">
+                  <option value="amazon-usbc-braided-cable">AmazonBasics 100W Braided Cable (₹499) - Auto-Approved</option>
+                  <option value="croma-gan-65w-charger">GaN 65W Multi-Port Charger (₹1,899) - Gated Review (&gt;₹1,000)</option>
+                </optgroup>
+                <optgroup label="✈️ Track 5: MakeMyTrip & Uber (Travel & Rides)">
+                  <option value="mmt-travel-insurance">MMT Trip &amp; Baggage Protection (₹199) - Auto-Approved</option>
+                  <option value="uber-airport-premier-cab">Uber Premier Airport Cab (₹650) - Auto-Approved</option>
+                </optgroup>
               </select>
             </div>
             <div>
@@ -276,11 +379,11 @@ export default function AgentsHubPage() {
             <div className="mt-4 p-3 rounded-lg bg-zinc-900/90 border border-zinc-800 text-xs font-mono text-zinc-300">
               <div className="flex items-center justify-between mb-1">
                 <span className="font-semibold text-blue-400">Simulation Result:</span>
-                {simResult.payData?.status === 'payment_link_created' && (
-                  <span className="text-emerald-400">Auto-Approved (Payment Link Created)</span>
+                {simResult.pay?.status === 'payment_link_created' && (
+                  <span className="text-emerald-400">Auto-Approved (Payment Link Generated)</span>
                 )}
-                {simResult.payData?.status === 'awaiting_human_approval' && (
-                  <span className="text-amber-400">Held for Human Review (&gt; ₹500 Threshold)</span>
+                {simResult.pay?.status === 'awaiting_human_approval' && (
+                  <span className="text-amber-400">Held for Human Review (&gt; Auto-Approve Threshold)</span>
                 )}
               </div>
               <pre className="overflow-x-auto text-[11px] text-zinc-400">
@@ -350,13 +453,31 @@ export default function AgentsHubPage() {
         </div>
       </div>
 
+      {/* Track Filter Tabs */}
+      <div className="flex items-center space-x-2 overflow-x-auto pb-2 scrollbar-none">
+        {tracksList.map((tr) => (
+          <button
+            key={tr.id}
+            onClick={() => setSelectedTrack(tr.id)}
+            className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
+              selectedTrack === tr.id
+                ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                : 'bg-zinc-900/90 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+            }`}
+          >
+            <span>{tr.icon}</span>
+            <span>{tr.label}</span>
+          </button>
+        ))}
+      </div>
+
       {/* Search & Filter */}
       <div className="flex items-center justify-between gap-4">
         <div className="relative flex-1 max-w-md">
           <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
           <input
             type="text"
-            placeholder="Search agents by name or ID..."
+            placeholder="Search agents by platform, name or ID..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full pl-10 pr-4 py-2 rounded-xl bg-zinc-900/80 border border-zinc-800 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-blue-500/60"
@@ -384,6 +505,7 @@ export default function AgentsHubPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {filteredAgents.map((agent) => {
           const theme = getAgentTheme(agent.name);
+          const trackInfo = getAgentTrackInfo(agent.name, agent.id);
           const dailyCap = agent.stats?.dailyCapPaise || 200000;
           const todaySpent = agent.stats?.todaySpentPaise || 0;
           const pctSpent = Math.min(100, Math.round((todaySpent / dailyCap) * 100));
@@ -395,7 +517,7 @@ export default function AgentsHubPage() {
             >
               <div>
                 {/* Card Top */}
-                <div className="flex items-start justify-between gap-3 mb-4">
+                <div className="flex items-start justify-between gap-3 mb-3">
                   <div className="flex items-center space-x-3">
                     <div className={`w-11 h-11 rounded-xl bg-gradient-to-tr ${theme.gradient} flex items-center justify-center shadow-md`}>
                       <Bot className="w-6 h-6 text-white" />
@@ -416,6 +538,14 @@ export default function AgentsHubPage() {
                     }`}
                   >
                     {agent.revoked ? 'Revoked' : 'Active'}
+                  </span>
+                </div>
+
+                {/* Track Badge */}
+                <div className="mb-4">
+                  <span className={`inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border ${trackInfo.badgeColor}`}>
+                    <span>{trackInfo.icon}</span>
+                    <span>{trackInfo.platforms}</span>
                   </span>
                 </div>
 

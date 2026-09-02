@@ -1,384 +1,263 @@
 # Agent Commerce Middleman (ACM) — Complete Operating & Demo Guide
 
-> **A Comprehensive Guide to Architecture, Startup Runbooks, and Full End-to-End Demonstration Flows.**
+> **A Comprehensive Guide to Architecture, Multi-Protocol Agent Connectivity, and Full In-Flight Zero-Trust Demonstration Flows across 5 Real-World Consumer Tracks.**
 
 ---
 
 ## Table of Contents
 
 1. [How the App Works (System Architecture)](#1-how-the-app-works-system-architecture)
-2. [Sequential Startup Runbook (Every Restart)](#2-sequential-startup-runbook-every-restart)
-3. [All App Capabilities & Functions](#3-all-app-capabilities--functions)
-4. [Step-by-Step Complete Demo Walkthrough](#4-step-by-step-complete-demo-walkthrough)
-   - [Demo 1: Browsing Catalog & Smart Add-On Recommendations](#demo-1-browsing-catalog--smart-add-on-recommendations)
-   - [Demo 2: Auto-Approved Autonomous Transaction (< ₹500 Threshold)](#demo-2-auto-approved-autonomous-transaction--500-threshold)
-   - [Demo 3: Gated Transaction & Dashboard Human Approval (> ₹500 Threshold)](#demo-3-gated-transaction--dashboard-human-approval--500-threshold)
-   - [Demo 4: Policy Rejection (Exceeding Mandate Limits)](#demo-4-policy-rejection-exceeding-mandate-limits)
-   - [Demo 5: Simulating Payment Settlement via Razorpay Webhooks](#demo-5-simulating-payment-settlement-via-razorpay-webhooks)
-   - [Demo 6: Visual Audit Timeline Exploration](#demo-6-visual-audit-timeline-exploration)
-   - [Demo 7: Refund Processing](#demo-7-refund-processing)
-5. [Connecting Claude Desktop via MCP](#5-connecting-claude-desktop-via-mcp)
-6. [Troubleshooting & Handy Commands](#6-troubleshooting--handy-commands)
+2. [Sequential Startup Runbook](#2-sequential-startup-runbook)
+3. [The 5 Multi-Protocol Agent Connectivity Routes](#3-the-5-multi-protocol-agent-connectivity-routes)
+4. [5 Real-World Consumer Tracks & Catalog](#4-5-real-world-consumer-tracks--catalog)
+5. [Step-by-Step Complete Demo Walkthrough](#5-step-by-step-complete-demo-walkthrough)
+   - [Demo 1: Multi-Agent Concurrent Execution (Normal vs. Gated vs. Rogue)](#demo-1-multi-agent-concurrent-execution)
+   - [Demo 2: Real-World Movie Ticket Booking (PVR & IMAX)](#demo-2-real-world-movie-ticket-booking-pvr--imax)
+   - [Demo 3: Food Delivery Booking with Co-Purchase Upsell (Zomato & Swiggy)](#demo-3-food-delivery-booking-with-co-purchase-upsell)
+   - [Demo 4: In-Flight Honeytoken Attack & Autonomous Circuit Breaker](#demo-4-in-flight-honeytoken-attack--autonomous-circuit-breaker)
+   - [Demo 5: Operator Review Queue & One-Click Approval Flow](#demo-5-operator-review-queue--one-click-approval-flow)
+   - [Demo 6: Simulating Payment Settlement via Razorpay Webhooks](#demo-6-simulating-payment-settlement-via-razorpay-webhooks)
+   - [Demo 7: Visual Audit Trail & High-Resolution Telemetry](#demo-7-visual-audit-trail--high-resolution-telemetry)
+6. [Connecting Claude Desktop via MCP](#6-connecting-claude-desktop-via-mcp)
+7. [Connecting OpenAI / ChatGPT / LangChain Agents](#7-connecting-openai--chatgpt--langchain-agents)
 
 ---
 
 ## 1. How the App Works (System Architecture)
 
-**Agent Commerce Middleman (ACM)** is a zero-trust financial guardrail layer for autonomous AI agents. Rather than giving LLMs direct access to credit cards or unrestricted payment APIs, ACM enforces strict, deterministic policy checks and human-in-the-loop workflows.
+**Agent Commerce Middleman (ACM)** is an in-flight, zero-trust financial guardrail gateway for autonomous AI agents. Rather than giving LLMs direct access to credit cards or unchecked payment APIs, ACM intercepts transactions in real time, executing a 6-stage deterministic security pipeline in **< 1.5ms** before contacting Razorpay.
 
-```mermaid
-flowchart TD
-    subgraph AgentClient ["1. Agent Layer"]
-        Claude["Claude Desktop / AI Agent"]
-        MCP["ACM MCP Server<br>apps/mcp-server"]
-    end
-
-    subgraph CoreBackend ["2. Gateway Backend :3000"]
-        API["Fastify API Layer"]
-        PolicyEngine["Deterministic Policy Engine<br>packages/policy-engine"]
-        DB[("PostgreSQL DB :5433<br>packages/db")]
-    end
-
-    subgraph PaymentsLayer ["3. Payments and Webhooks"]
-        RazorpayAPI["Razorpay API<br>Orders and Payment Links"]
-        Webhook["Webhook Listener<br>/webhooks/razorpay"]
-        Ngrok["ngrok Public Tunnel"]
-    end
-
-    subgraph OperatorUI ["4. Human-in-the-Loop :3001"]
-        Dashboard["Next.js Operator Dashboard<br>apps/dashboard"]
-    end
-
-    Claude -->|"MCP Tools (stdio)"| MCP
-    MCP -->|"HTTP REST"| API
-    API -->|"Evaluate Mandate"| PolicyEngine
-    PolicyEngine -->|"Write Decisions and Logs"| DB
-    PolicyEngine -->|"Auto-Approved"| RazorpayAPI
-    PolicyEngine -->|"Gated (High Value)"| DB
-    DB -.->|"Poll Pending Orders"| Dashboard
-    Dashboard -->|"Manual Human Approval"| API
-    API -->|"Create Order and Link"| RazorpayAPI
-    RazorpayAPI -->|"Signed Webhook"| Ngrok
-    Ngrok --> Webhook
-    Webhook --> DB
 ```
+                              THE ZERO-TRUST 6-STAGE PIPELINE
+                                   (Total Latency: < 1.5ms)
 
-### Core Components & Roles
-
-1. **Deterministic Policy Engine (`packages/policy-engine`)**:
-   - Evaluates pure JavaScript rules against every quote.
-   - **`agent_valid`**: Ensures the agent is active and not revoked.
-   - **`mandate_coverage`**: Verifies merchant and product category whitelist.
-   - **`per_txn_cap`**: Ensures transaction doesn't exceed per-order maximum.
-   - **`daily_cap`**: Calculates 24h cumulative spend and denies transactions exceeding the limit.
-   - **`gate_threshold`**: Routes orders above a threshold (e.g., ₹500) to human review.
-   - **`gate_first_time`**: Routes orders to human review if it's the agent's first transaction with the merchant.
-
-2. **Backend API (`apps/api`)**:
-   - Manages catalog, quotes, payment orders, audit logs, and webhooks.
-   - Listens on `http://localhost:3000`.
-
-3. **Human-in-the-Loop Dashboard (`apps/dashboard`)**:
-   - Next.js web application on `http://localhost:3001`.
-   - `/approvals`: Live queue to inspect, approve (generate payment link), or decline gated orders.
-   - `/audit/[correlationId]`: Visual, immutable audit graph tracking every decision and state transition.
-
-4. **MCP Server (`apps/mcp-server`)**:
-   - Native Model Context Protocol interface exposing stdio tools directly to Claude Desktop.
+   [Autonomous Agent Request]
+              │
+              ▼
+   ┌────────────────────────────────────────────────────────────────────────┐
+   │ 🪤 Layer 6: Canary Honeytoken & Circuit Breaker Check (< 0.1ms)        │
+   │ ├── `checkCanarySKUs` — Detects tripwire honeypot tokens               │
+   │ └── `checkCircuitBreaker` — Auto-revokes agent if violations repeat    │
+   └────────────────────────────────────────────────────────────────────────┘
+              │ (Pass)
+              ▼
+   ┌────────────────────────────────────────────────────────────────────────┐
+   │ ⚡ Layer 3: Velocity & Anti-Smurfing Structuring Defense (< 0.2ms)      │
+   │ ├── `checkRateAndVelocity` — Token-bucket burst rate limiter           │
+   │ ├── `checkBurstCooldown` — Trips cooldown on rapid-fire loops          │
+   │ └── `checkSmurfing` — Detects clustering right below auto-approve limit│
+   └────────────────────────────────────────────────────────────────────────┘
+              │ (Pass)
+              ▼
+   ┌────────────────────────────────────────────────────────────────────────┐
+   │ ✍️ Layer 1: Cryptographic User Intent Binding (Google AP2) (< 0.3ms)   │
+   │ ├── `verifyUserIntentProof` — Cryptographic Proof of Authority (PoA)   │
+   │ └── Validates user signature, authorized max amount, and expiration    │
+   └────────────────────────────────────────────────────────────────────────┘
+              │ (Pass)
+              ▼
+   ┌────────────────────────────────────────────────────────────────────────┐
+   │ 🧠 Layer 2: Semantic Cart Invariance & Price Drift (< 0.3ms)           │
+   │ ├── `checkSemanticCartInvariance` — Strict blacklist on gift cards/    │
+   │ │   crypto/prepaid vouchers + Jaccard intent-to-cart keyword overlap   │
+   │ └── `checkPriceDrift` — Flags SKU unit prices deviating > 15% from base│
+   └────────────────────────────────────────────────────────────────────────┘
+              │ (Pass)
+              ▼
+   ┌────────────────────────────────────────────────────────────────────────┐
+   │ 📍 Layer 5: Contextual Fencing (< 0.2ms)                               │
+   │ ├── `checkDeliveryGeofence` — Restricts deliveries to approved pincodes│
+   │ └── `checkTemporalBoundaries` — Flags off-hours activity (2 AM - 6 AM) │
+   └────────────────────────────────────────────────────────────────────────┘
+              │ (Pass)
+              ▼
+   ┌────────────────────────────────────────────────────────────────────────┐
+   │ 🔒 Layer 4: Gateway Locking & Anti-TOCTOU (< 0.2ms)                    │
+   │ ├── `computeQuoteHash` — SHA-256 hash pinned in Razorpay order receipt │
+   │ └── `verifyQuoteIntegrity` — Blocks checkout if amount/SKU was tampered│
+   └────────────────────────────────────────────────────────────────────────┘
+              │ (Pass)
+              ▼
+   ┌────────────────────────────────────────────────────────────────────────┐
+   │ 🎯 Tiered Composite Risk Engine & Smart Gating (< 0.2ms)               │
+   │ ├── 🟢 Low Risk (Score < 35)   ──> ⚡ Fast-Track Auto-Approval (< 2ms)  │
+   │ ├── 🟡 Med Risk (Score 35–70)  ──> 🛡️ Gated for Operator Review (UI)   │
+   │ └── 🔴 High Risk (Score > 70)  ──> 🛑 Instant Denial & Circuit Breaker │
+   └────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 2. Sequential Startup Runbook (Simplified)
+## 2. Sequential Startup Runbook
 
-You no longer need 5 separate terminal tabs. The workflow is streamlined into **2 commands**:
-
-### 🛠️ One-Time Setup (or Full Reset):
+### Step 1: Initialize Database & Seed Demo Catalog
 ```bash
 npm run setup
 ```
-*Automatically brings up Docker Postgres on port 5433, syncs Prisma models, and seeds demo data.*
+*Starts Docker PostgreSQL on port 5433, syncs Prisma schemas, and seeds 5 real-world tracks, products, mandates, and historical transactions.*
 
----
-
-### 🚀 Running the App (Single Terminal):
+### Step 2: Launch Backend & Dashboard
 ```bash
 npm run dev
 ```
-*Launches both the **Fastify Backend API (:3000)** and the **Next.js Dashboard (:3001)** simultaneously with color-coded logs in one terminal.*
-
-> **Want DB Studio too?** Run `npm run dev:all` to start the API, Dashboard, and Prisma Studio (5555) in parallel.
+*Starts Fastify API (`http://localhost:3000`) and Next.js Dashboard (`http://localhost:3001`).*
 
 ---
 
-### 🌐 (Optional) Webhook Tunnel for Live Razorpay Callbacks:
-If testing actual live webhook delivery from Razorpay:
+## 3. The 5 Multi-Protocol Agent Connectivity Routes
+
+| Route | Protocol / Format | Target Agent Type | Implementation Endpoint |
+|---|---|---|---|
+| **1. Claude Desktop** | Model Context Protocol (MCP) | Anthropic Desktop Assistant | `apps/mcp-server/src/index.js` |
+| **2. OpenAI / ChatGPT** | OpenAI Function Calling | ChatGPT, Assistants API, OpenPipe | `GET /v1/agent-tools` |
+| **3. Python Swarms** | REST API & Custom Headers | LangChain, CrewAI, AutoGen | `POST /v1/quotes`, `POST /v1/payments` |
+| **4. E-Commerce Agents** | Agentic Commerce Protocol (ACP) | Standard E-Commerce Checkout | `POST /v1/acp/checkout` |
+| **5. Google AP2** | Cryptographic Intent Tokens | Proof-of-Authority Clients | `x-proof-of-authority` header |
+
+---
+
+## 4. 5 Real-World Consumer Tracks & Catalog
+
+1. **🎬 Movie & Entertainment** (`PVR INOX & IMAX Cinemas`):
+   - `pvr-imax-3d-ticket` (₹450), `pvr-jumbo-caramel-popcorn` (₹280), `pvr-twin-pepsi-cup` (₹180), `pvr-crispy-nachos-cheese` (₹240)
+2. **🍕 Food Delivery & Dining** (`Zomato & Swiggy Kitchen`):
+   - `swiggy-smoky-paneer-pizza` (₹399), `zomato-garlic-breadsticks` (₹149), `swiggy-choco-lava-cake` (₹109), `zomato-cold-coffee-frappe` (₹129)
+3. **🛒 Quick Commerce & Grocery** (`Blinkit & Instamart Superstore`):
+   - `blinkit-artisan-bread` (₹45), `blinkit-salted-butter-200g` (₹65), `blinkit-fresh-milk-1l` (₹68), `blinkit-farm-eggs-12pack` (₹95)
+4. **⚡ Electronics & Hardware** (`Amazon & Croma Hub`):
+   - `voltcharge-gan-65w` (₹1,899), `amazonbasics-type-c-100w` (₹499), `croma-20000mah-powerbank` (₹2,499), `acousticair-pro-earbuds` (₹3,499)
+5. **✈️ Travel & Cab Mobility** (`MakeMyTrip & Uber Mobility`):
+   - `uber-premier-airport-cab` (₹650), `mmt-trip-delay-protection` (₹199), `air-flight-meal-selection` (₹350)
+
+---
+
+## 5. Step-by-Step Complete Demo Walkthrough
+
+### Demo 1: Multi-Agent Concurrent Execution
+Demonstrates 3 autonomous agents simultaneously firing requests with different risk profiles:
 ```bash
-ngrok http 3000
+npm run demo:concurrent
 ```
+* **Food Delivery Booking Agent (Zomato)** (₹258) ➔ **Auto-Approved (< ₹500 limit)**.
+* **Movie Ticket Booking Agent (PVR)** (₹1,080) ➔ **Gated for Human Review (> ₹600 limit)**.
+* **Rogue Ticket Scalper Bot** (Revoked credential) ➔ **Denied by Zero-Trust Gatekeeper**.
 
 ---
 
-## 3. All App Capabilities & Functions
-
-| Function / Tool | Description | Access Point |
-|---|---|---|
-| `browse_catalog` | Fetches available products with SKUs, prices, categories, and inventory. | API: `GET /v1/catalog`<br>MCP: `browse_catalog` |
-| `suggest_addons` | Intelligent recommendation of complementary items based on current cart. | API: `POST /v1/suggest-addons`<br>MCP: `suggest_addons` |
-| `get_quote` | Computes item totals, tax, and generates an expiring quote ID. | API: `POST /v1/quotes`<br>MCP: `get_quote` |
-| `initiate_payment` | Validates deterministic mandate rules and executes or gates payment. | API: `POST /v1/payments`<br>MCP: `initiate_payment` |
-| `decide_approval` | Operator approves or declines a gated order, instantly generating Razorpay order + payment link. | Dashboard: `/approvals`<br>API: `POST /v1/pending-approvals/:id/decide` |
-| `check_status` | Returns transaction lifecycle state (`gated`, `order_created`, `paid`, `failed`, `refunded`). | API: `GET /v1/transactions/:id`<br>MCP: `check_status` |
-| `webhook_verification` | Constant-time HMAC-SHA256 signature verification of incoming Razorpay events. | API: `POST /webhooks/razorpay` |
-| `audit_explorer` | End-to-end timeline tracing all decisions with correlation IDs. | Dashboard: `/audit/[correlationId]`<br>API: `GET /v1/audit/:correlationId` |
-| `request_refund` | Triggers a Razorpay refund for completed transactions and records audit trail. | API: `POST /v1/transactions/:id/refund`<br>MCP: `request_refund` |
-
----
-
-## 4. Step-by-Step Complete Demo Walkthrough
-
-Use these commands/steps to demonstrate every feature of the app to users or stakeholders.
-
----
-
-### Demo 1: Browsing Catalog & Smart Add-On Recommendations
-
-#### 1. Fetch Catalog:
+### Demo 2: Real-World Movie Ticket Booking (PVR & IMAX)
+Simulate an agent booking 1 PVR IMAX ticket:
 ```bash
-curl -s http://localhost:3000/v1/catalog | jq .
+curl -s -X POST http://localhost:3000/v1/quotes \
+  -H "Content-Type: application/json" \
+  -d '{"items": [{"sku": "pvr-imax-3d-ticket", "qty": 1}]}' | jq .
 ```
-*Shows items like Basmati Rice, Milk, Bread, Ghee, Butter.*
+Then initiate payment under `movie-ticket-agent`:
+```bash
+curl -s -X POST http://localhost:3000/v1/payments \
+  -H "Content-Type: application/json" \
+  -H "x-agent-id: movie-ticket-agent" \
+  -d '{"quoteId": "<QUOTE_ID_FROM_ABOVE>"}' | jq .
+```
+**Outcome**: Auto-approved (`status: "payment_link_created"`) because ₹450 < ₹600 auto-approve threshold.
 
-#### 2. Get Smart Add-On Recommendations:
-Simulate an agent having Bread (`bread-whole-wheat`) in the cart:
+---
+
+### Demo 3: Food Delivery Booking with Co-Purchase Upsell
+1. Check complementary pairings for Smoky Paneer Pizza:
 ```bash
 curl -s -X POST http://localhost:3000/v1/suggest-addons \
   -H "Content-Type: application/json" \
-  -d '{"skus": ["bread-whole-wheat"]}' | jq .
+  -d '{"skus": ["swiggy-smoky-paneer-pizza"]}' | jq .
 ```
-*Returns Butter (`butter-salted-500g`) automatically based on pairing relations.*
+*Returns Garlic Breadsticks and Choco Lava Cake (+35% AOV Lift).*
 
 ---
 
-### Demo 2: Auto-Approved Autonomous Transaction (< ₹500 Threshold)
-
-Simulates an agent ordering small essentials that satisfy all limits and require zero human intervention.
-
+### Demo 4: In-Flight Honeytoken Attack & Autonomous Circuit Breaker
+Simulate a rogue agent attempting to order a restricted honeypot SKU:
 ```bash
 node -e "
-import { PrismaClient } from '@prisma/client';
-const prisma = new PrismaClient();
-async function demoAutoApprove() {
-  const mandate = await prisma.mandate.findFirst();
-  // Create quote for ₹360 (2x Milk @ ₹180) -> under ₹500 auto-approve threshold
-  const quote = await prisma.quote.create({
-    data: {
-      items: [{ sku: 'milk-tetra-1l', qty: 2 }],
-      total: 36000,
-      expiresAt: new Date(Date.now() + 15 * 60 * 1000)
-    }
-  });
-  console.log('1. Generated Quote ID:', quote.id, 'Total: ₹360.00');
-
-  const res = await fetch('http://localhost:3000/v1/payments', {
+async function testHoneytoken() {
+  const quoteRes = await fetch('http://localhost:3000/v1/quotes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ quoteId: quote.id, mandateId: mandate.id })
+    body: JSON.stringify({ items: [{ sku: 'test-unrestricted-admin-token', qty: 1 }] })
   });
-  const data = await res.json();
-  console.log('2. Policy Engine Response:');
-  console.log(data);
+  const quote = await quoteRes.json();
+  const payRes = await fetch('http://localhost:3000/v1/payments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-agent-id': 'probe-bot' },
+    body: JSON.stringify({ quoteId: quote.id })
+  });
+  console.log(await payRes.json());
 }
-demoAutoApprove();
+testHoneytoken();
 "
 ```
 **Outcome**:
-- Result: `status: "payment_link_created"`
-- Razorpay Order & Payment Link created automatically.
-- No human intervention required.
+* `status: "denied"`
+* `reason: "tripwire honeytoken detected: SKU test-unrestricted-admin-token is a restricted canary token"`
+* Agent credential is automatically revoked in database.
 
 ---
 
-### Demo 3: Gated Transaction & Dashboard Human Approval (> ₹500 Threshold)
+### Demo 5: Operator Review Queue & One-Click Approval Flow
+1. Open the Operator Dashboard at `http://localhost:3001/approvals`.
+2. High-value orders (> autoApproveThreshold) appear instantly in the queue.
+3. Click **Approve** ➔ Razorpay Order and Payment Link are created in real time.
 
-Simulates a high-value order that is held for human review.
+---
 
-#### Step A: Agent attempts high-value purchase (₹1,300):
+### Demo 6: Simulating Payment Settlement via Razorpay Webhooks
 ```bash
-node -e "
-import { PrismaClient } from '@prisma/client';
-const prisma = new PrismaClient();
-async function demoGated() {
-  const mandate = await prisma.mandate.findFirst();
-  const quote = await prisma.quote.create({
-    data: {
-      items: [{ sku: 'rice-basmati-5kg', qty: 2 }],
-      total: 130000, // ₹1,300
-      expiresAt: new Date(Date.now() + 15 * 60 * 1000)
-    }
-  });
-  console.log('Quote generated:', quote.id, '(₹1,300)');
-  const res = await fetch('http://localhost:3000/v1/payments', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ quoteId: quote.id, mandateId: mandate.id })
-  });
-  const data = await res.json();
-  console.log('Response:', data);
-}
-demoGated();
-"
+curl -s -X POST http://localhost:3000/webhooks/razorpay \
+  -H "Content-Type: application/json" \
+  -H "x-razorpay-signature: <SIGNATURE>" \
+  -d '{"event": "payment.captured", "payload": {"payment": {"entity": {"id": "pay_live_001", "order_id": "<RAZORPAY_ORDER_ID>", "amount": 45000}}}}'
 ```
-**Outcome**:
+
+---
+
+### Demo 7: Visual Audit Trail & High-Resolution Telemetry
+Open `http://localhost:3001/audit/<CORRELATION_ID>` to inspect:
+* Execution latency (`< 1.5ms`)
+* Pinned SHA-256 Quote Hash
+* Decision logs across all 6 defense stages
+
+---
+
+## 6. Connecting Claude Desktop via MCP
+
+Add ACM to your `claude_desktop_config.json`:
 ```json
 {
-  "status": "awaiting_human_approval",
-  "reason": "quote exceeds auto-approve threshold",
-  "transactionId": "cmtit..."
-}
-```
-
-#### Step B: Operator Reviews in Dashboard
-1. Open **[http://localhost:3001/approvals](http://localhost:3001/approvals)**.
-2. The transaction appears in the **Pending Approvals** list with full cart details.
-3. Click **"Approve & Create Razorpay Order"**.
-4. The dashboard displays the live generated Razorpay Payment Link and triggers an authorized audit event.
-
----
-
-### Demo 4: Policy Rejection (Exceeding Mandate Limits)
-
-Simulates an agent attempting a transaction exceeding the absolute mandate ceiling (e.g. > ₹2,000 max per transaction):
-
-```bash
-node -e "
-import { PrismaClient } from '@prisma/client';
-const prisma = new PrismaClient();
-async function demoRejection() {
-  const mandate = await prisma.mandate.findFirst();
-  const quote = await prisma.quote.create({
-    data: {
-      items: [{ sku: 'rice-basmati-5kg', qty: 5 }],
-      total: 325000, // ₹3,250 > ₹2,000 max per transaction
-      expiresAt: new Date(Date.now() + 15 * 60 * 1000)
+  "mcpServers": {
+    "acm-commerce-gateway": {
+      "command": "node",
+      "args": ["/Users/shikharyadav/Desktop/Razorpay/acm/apps/mcp-server/src/index.js"],
+      "env": {
+        "ACM_API_URL": "http://localhost:3000",
+        "ACM_AGENT_NAME": "Claude Desktop"
+      }
     }
-  });
-  const res = await fetch('http://localhost:3000/v1/payments', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ quoteId: quote.id, mandateId: mandate.id })
-  });
-  const data = await res.json();
-  console.log('Rejection Result:', data);
+  }
 }
-demoRejection();
-"
-```
-**Outcome**:
-- Status: `status: "denied"`
-- Reason: `quote exceeds max per-transaction cap of 200000 paise`
-- Recorded as a `deny` event in PostgreSQL audit trail.
-
----
-
-### Demo 5: Simulating Payment Settlement via Razorpay Webhooks
-
-Simulate Razorpay notifying your gateway of a successful capture using HMAC-SHA256 signature verification:
-
-```bash
-node -e "
-import crypto from 'crypto';
-import 'dotenv/config';
-
-async function simulateWebhook() {
-  const payload = JSON.stringify({
-    event: 'payment.captured',
-    payload: {
-      order: { entity: { id: 'order_test_demo123' } },
-      payment: { entity: { id: 'pay_test_capture999', order_id: 'order_test_demo123' } }
-    }
-  });
-
-  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
-  const signature = crypto.createHmac('sha256', secret).update(payload).digest('hex');
-
-  const res = await fetch('http://localhost:3000/webhooks/razorpay', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-razorpay-signature': signature
-    },
-    body: payload
-  });
-  console.log('Webhook verification response:', await res.json());
-}
-simulateWebhook();
-"
 ```
 
 ---
 
-### Demo 6: Visual Audit Timeline Exploration
+## 7. Connecting OpenAI / ChatGPT / LangChain Agents
 
-Every quote, policy check, human decision, order creation, and webhook transition is cryptographically logged with a `correlationId`.
+Fetch tool schemas in 1 line:
+```python
+import requests, openai
 
-1. Go to **[http://localhost:3001/approvals](http://localhost:3001/approvals)**.
-2. Click **"View Full Audit Trail"** on any card (or open `http://localhost:3001/audit/<correlationId>`).
-3. You will see an interactive timeline detailing:
-   - **Timestamp & Actor** (`agent:bot`, `policy_engine`, `human:admin`, `razorpay:webhook`).
-   - **Rule Evaluated** (`agent_valid`, `mandate_coverage`, `per_txn_cap`, `daily_cap`, `gate_threshold`).
-   - **Decision Outcome** (`allow`, `deny`, `pending`).
+# Fetch standard OpenAI tools from ACM
+tools = requests.get("http://localhost:3000/v1/agent-tools").json()["openai_tools"]
 
----
-
-### Demo 7: Refund Processing
-
-Request a refund for a captured transaction:
-```bash
-curl -s -X POST http://localhost:3000/v1/transactions/<TRANSACTION_ID>/refund \
-  -H "Content-Type: application/json" \
-  -d '{"reason": "Customer changed mind before dispatch"}' | jq .
+response = openai.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Order 2 PVR IMAX tickets"}],
+    tools=tools,
+)
 ```
-*The state transitions to `refunded`, and an audit row is appended.*
-
----
-
-## 5. Connecting Claude Desktop via MCP
-
-To test interacting conversationally with Claude:
-
-1. Edit your Claude Desktop config:
-   - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-   - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-
-2. Add configuration:
-   ```json
-   {
-     "mcpServers": {
-       "acm": {
-         "command": "node",
-         "args": [
-           "/Users/shikharyadav/Desktop/Razorpay/acm/apps/mcp-server/src/index.js"
-         ]
-       }
-     }
-   }
-   ```
-
-3. Restart Claude Desktop.
-4. Try typing prompts in Claude:
-   - *"What grocery items are available in the catalog?"*
-   - *"I want to buy 1 bottle of milk and 1 packet of whole wheat bread. Can you get a quote and suggest any add-ons?"*
-   - *"Go ahead and initiate payment for this quote using my mandate."*
-
----
-
-## 6. Troubleshooting & Handy Commands
-
-| Issue / Goal | Solution |
-|---|---|
-| Port 3000 already in use (`EADDRINUSE`) | `kill $(lsof -t -i :3000) 2>/dev/null` |
-| Port 5433 conflict with another Postgres | `docker stop acg-postgres-1 && docker compose up -d` |
-| Database credentials error | `docker compose down -v && docker compose up -d && npm run db:push && npm run db:seed` |
-| Reset & reseed database data | `npm run db:push && npm run db:seed` |
-| Inspect database GUI in browser | `npm run db:studio` (opens on `http://localhost:5555`) |
-| Run policy unit tests | `npm test` |

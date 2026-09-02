@@ -101,6 +101,13 @@ describe('ACM API Integration Test Suite', () => {
       },
     });
 
+    // Clean up any stale test transactions from previous runs to ensure clean test state
+    await prisma.pendingApproval.deleteMany({});
+    await prisma.auditLogRow.deleteMany({});
+    await prisma.transaction.deleteMany({
+      where: { mandate: { agentId: 'test-agent-alpha' } },
+    });
+
     // Establish first approved/paid transaction to clear first-time merchant gate
     const initQuote = await prisma.quote.create({
       data: {
@@ -649,5 +656,166 @@ describe('ACM API Integration Test Suite', () => {
     assert.equal(res.statusCode, 400);
     const data = JSON.parse(res.payload);
     assert.ok(data.reason.includes('exceeds maximum'));
+  });
+
+  test('POST /v1/payments validates Proof of Authority (AP2) token', async () => {
+    const freshAgent = await prisma.agent.create({
+      data: {
+        name: 'PoA Fresh Agent ' + Date.now(),
+        apiKeyHash: 'hash-poa-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+        revoked: false,
+      },
+    });
+    const freshMandate = await prisma.mandate.create({
+      data: {
+        agentId: freshAgent.id,
+        merchantId: testMerchant.id,
+        signedPayload: 'test_poa_mandate',
+        active: true,
+        maxPerTransaction: 100000,
+        dailyCap: 500000,
+        autoApproveThreshold: 50000,
+        allowedCategories: ['grocery.bakery'],
+      },
+    });
+
+    // Seed 1 prior transaction so isFirstTimeMerchant is false
+    const priorQuote = await prisma.quote.create({
+      data: {
+        items: [{ sku: 'bread-white-test', qty: 1 }],
+        total: 4000,
+        expiresAt: new Date(Date.now() + 600000),
+      },
+    });
+    await prisma.transaction.create({
+      data: {
+        correlationId: 'prior-tx-' + Date.now(),
+        mandateId: freshMandate.id,
+        quoteId: priorQuote.id,
+        state: 'paid',
+      },
+    });
+
+    const quote = await prisma.quote.create({
+      data: {
+        items: [{ sku: 'bread-white-test', qty: 1 }],
+        total: 4000,
+        expiresAt: new Date(Date.now() + 600000),
+      },
+    });
+
+    // Valid user signed token for ₹100
+    const rawPoa = JSON.stringify({
+      userId: 'user-shikhar',
+      agentId: freshAgent.id,
+      intent: 'Buy breakfast bread',
+      maxAuthorizedPaise: 10000,
+      allowedMerchant: testMerchant.id,
+      expiresAt: new Date(Date.now() + 3600000).toISOString(),
+      nonce: 'nonce_test_01',
+    });
+    const crypto = await import('crypto');
+    const signature = crypto.createHmac('sha256', process.env.ACM_MANDATE_SECRET || 'acm_ap2_mandate_secret_key').update(rawPoa).digest('hex');
+    const proofToken = Buffer.from(JSON.stringify({ proof: JSON.parse(rawPoa), signature })).toString('base64');
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/payments',
+      headers: {
+        'x-agent-id': freshAgent.id,
+        'x-proof-of-authority': proofToken,
+      },
+      payload: {
+        quoteId: quote.id,
+        mandateId: freshMandate.id,
+      },
+    });
+
+    assert.equal(res.statusCode, 200);
+    const data = JSON.parse(res.payload);
+    assert.equal(data.status, 'payment_link_created');
+  });
+
+  test('POST /v1/payments gates delivery pincode outside approved geofence', async () => {
+    const geoAgent = await prisma.agent.create({
+      data: {
+        name: 'Geo Fresh Agent ' + Date.now(),
+        apiKeyHash: 'hash-geo-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+        revoked: false,
+      },
+    });
+    const geoMandate = await prisma.mandate.create({
+      data: {
+        agentId: geoAgent.id,
+        merchantId: testMerchant.id,
+        signedPayload: 'test_geo_mandate',
+        active: true,
+        maxPerTransaction: 100000,
+        dailyCap: 500000,
+        autoApproveThreshold: 50000,
+        allowedCategories: ['grocery.bakery'],
+      },
+    });
+
+    const quote = await prisma.quote.create({
+      data: {
+        items: [{ sku: 'bread-white-test', qty: 1 }],
+        total: 4000,
+        expiresAt: new Date(Date.now() + 600000),
+      },
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/payments',
+      headers: { 'x-agent-id': geoAgent.id },
+      payload: {
+        quoteId: quote.id,
+        mandateId: geoMandate.id,
+        deliveryPincode: '999999', // unauthorized pincode
+      },
+    });
+
+    assert.equal(res.statusCode, 200);
+    const data = JSON.parse(res.payload);
+    assert.equal(data.status, 'awaiting_human_approval');
+    assert.ok(data.reason.includes('does not match user pre-approved address whitelist'));
+  });
+
+  test('POST /v1/payments trips circuit breaker and auto-revokes agent on canary honeypot SKU', async () => {
+    // Create an ephemeral test agent
+    const probeAgent = await prisma.agent.create({
+      data: {
+        name: 'Malicious Probe Bot ' + Date.now(),
+        apiKeyHash: 'hash-probe-bot-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+        revoked: false,
+      },
+    });
+
+    const quote = await prisma.quote.create({
+      data: {
+        items: [{ sku: 'test-unrestricted-admin-token', qty: 1, unitPrice: 100 }],
+        total: 100,
+        expiresAt: new Date(Date.now() + 600000),
+      },
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/payments',
+      headers: { 'x-agent-id': probeAgent.id },
+      payload: {
+        quoteId: quote.id,
+      },
+    });
+
+    assert.equal(res.statusCode, 200);
+    const data = JSON.parse(res.payload);
+    assert.equal(data.status, 'denied');
+    assert.ok(data.reason.includes('tripwire honeytoken detected'));
+
+    // Verify agent is immediately marked revoked in DB
+    const updatedAgent = await prisma.agent.findUnique({ where: { id: probeAgent.id } });
+    assert.equal(updatedAgent.revoked, true);
   });
 });

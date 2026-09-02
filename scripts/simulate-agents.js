@@ -5,11 +5,13 @@ import { evaluateTransaction } from '../packages/policy-engine/src/evaluate.js';
 const prisma = new PrismaClient();
 
 const BUYER_PERSONAS = [
-  { name: 'Morning Breakfast Bot', baseItem: 'bread-white', acceptAddonProb: 0.85, preferredAddon: 'butter-salted' },
-  { name: 'Office Pantry Restocker', baseItem: 'milk-1l', acceptAddonProb: 0.70, preferredAddon: 'eggs-dozen' },
-  { name: 'Home Chef Agent', baseItem: 'rice-basmati-5kg', acceptAddonProb: 0.80, preferredAddon: 'toor-dal-1kg' },
-  { name: 'Tech Hardware Provisioner', baseItem: 'fast-charger-65w', acceptAddonProb: 0.90, preferredAddon: 'usbc-braided-cable' },
-  { name: 'Audio Equipment Buyer', baseItem: 'wireless-earbuds-pro', acceptAddonProb: 0.75, preferredAddon: 'earbuds-silicone-case' },
+  { name: 'Movie Ticket Booking Agent (PVR & IMAX)', baseItem: 'pvr-imax-3d-ticket', acceptAddonProb: 0.92, preferredAddon: 'pvr-caramel-popcorn-tub' },
+  { name: 'Food Delivery Booking Agent (Zomato & Swiggy)', baseItem: 'swiggy-smoky-paneer-pizza', acceptAddonProb: 0.88, preferredAddon: 'zomato-garlic-breadsticks' },
+  { name: 'Quick Commerce Agent (Blinkit & Zepto)', baseItem: 'blinkit-artisan-bread', acceptAddonProb: 0.82, preferredAddon: 'blinkit-amul-butter' },
+  { name: 'Tech Buyer Agent (Amazon & Croma)', baseItem: 'croma-gan-65w-charger', acceptAddonProb: 0.90, preferredAddon: 'amazon-usbc-braided-cable' },
+  { name: 'Travel & Mobility Agent (MakeMyTrip & Uber)', baseItem: 'uber-airport-premier-cab', acceptAddonProb: 0.80, preferredAddon: 'mmt-travel-insurance' },
+  { name: 'Cinema Concessions Bot (PVR INOX)', baseItem: 'pvr-nachos-salsa-combo', acceptAddonProb: 0.78, preferredAddon: 'pvr-pepsi-twin-fountain' },
+  { name: 'Late Night Dessert Bot (Swiggy Bakery)', baseItem: 'swiggy-smoky-paneer-pizza', acceptAddonProb: 0.72, preferredAddon: 'swiggy-choco-lava-cake' },
 ];
 
 export async function runAgentGrowthSimulation({ agentCount = 50, persist = false } = {}) {
@@ -27,7 +29,13 @@ export async function runAgentGrowthSimulation({ agentCount = 50, persist = fals
     maxPerTransaction: 500000,
     dailyCap: 1000000,
     autoApproveThreshold: 100000,
-    allowedCategories: ['grocery.bakery', 'grocery.dairy', 'grocery.staples', 'electronics.chargers', 'electronics.cables', 'electronics.audio', 'electronics.accessories'],
+    allowedCategories: [
+      'entertainment.tickets', 'entertainment.concessions', 'entertainment.beverages',
+      'food.mains', 'food.sides', 'food.desserts', 'food.beverages',
+      'grocery.bakery', 'grocery.dairy', 'grocery.staples',
+      'electronics.chargers', 'electronics.cables', 'electronics.audio', 'electronics.accessories',
+      'travel.rides', 'travel.insurance', 'travel.addons'
+    ],
     active: true,
   };
 
