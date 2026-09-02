@@ -120,8 +120,16 @@ acm/
 
 ---
 
-### 2. Environment Configuration
-Copy `.env.example` to `.env` in the root folder:
+### 2. Navigate to the Project Directory
+Ensure you are inside the `acm` project directory:
+```bash
+cd acm
+```
+
+---
+
+### 3. Environment Configuration
+Copy `.env.example` to `.env` in the `acm/` folder:
 ```bash
 cp .env.example .env
 ```
@@ -137,31 +145,45 @@ PORT=3000
 
 ---
 
-### 3. One-Click Setup (Docker + Database + Seed Data)
+### 4. One-Click Setup (Docker + Database + Seed Data)
 
-Run the automated setup command from either the workspace root or `acm/`:
+Run the automated setup command from inside `acm/`:
 ```bash
 npm run setup
 ```
-*(This starts PostgreSQL in Docker on port 5433, synchronizes Prisma models, and seeds demo agents, merchants, and catalog items).*
+*(This brings up PostgreSQL in Docker on port 5433, synchronizes Prisma models, and seeds demo agents, merchants, products, and mandates).*
 
 ---
 
-### 4. Single-Command Dev Environment (API + Dashboard)
+### 5. Running the Application
 
-Start both the **Fastify Backend API (:3000)** and the **Next.js Dashboard (:3001)** simultaneously:
+You can run the full stack with a single command or start components individually:
+
+#### 🚀 Recommended: Run Full Stack (API + Dashboard)
 ```bash
 npm run dev
 ```
+- **Fastify Backend API**: [`http://localhost:3000`](http://localhost:3000)
+- **Next.js Operator Dashboard**: [`http://localhost:3001`](http://localhost:3001)
 
-*Or launch API + Dashboard + Prisma Studio GUI simultaneously:*
+#### 🌟 Run Everything (API + Dashboard + Prisma Studio GUI)
 ```bash
 npm run dev:all
 ```
+- **Prisma Studio (DB Inspector)**: [`http://localhost:5555`](http://localhost:5555)
+
+#### 🛠️ Individual Service Commands
+| Command | Description | Port / Target |
+|---|---|---|
+| `npm run dev:api` | Fastify API server with hot reload | `http://localhost:3000` |
+| `npm run dev:dashboard` | Next.js Operator Dashboard | `http://localhost:3001` |
+| `npm run db:studio` | Prisma Studio web UI | `http://localhost:5555` |
+| `npm run mcp:start` | MCP Server (stdio interface for Claude Desktop) | `stdio` |
+| `npm test` | Run complete unit and integration test suite | Tests |
 
 ---
 
-### 5. Operator Dashboard Features
+### 6. Operator Dashboard Features
 
 Open your browser at **`http://localhost:3001`**:
 
