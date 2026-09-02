@@ -105,35 +105,55 @@ export async function evaluateTransaction({
 
     let expressFailed = null;
     for (const check of expressSanityChecks) {
+      await writeAuditRow({
+        correlationId,
+        step: 'policy_check',
+        decision: check.decision,
+        reason: check.reason,
+        ruleId: check.ruleId,
+        actor: 'system',
+      });
+
       if (check.decision === 'deny') {
         expressFailed = check;
-        break;
+        const elapsed = parseFloat((performance.now() - startTime).toFixed(2));
+        return {
+          finalDecision: 'deny',
+          reason: check.reason,
+          ruleId: check.ruleId,
+          riskScore: 100,
+          riskTier: 'high',
+          quoteHash,
+          latencyMs: elapsed,
+          lane: LANES.EXPRESS_LANE,
+          trustScore,
+          isSampled: false,
+          isCanaryTriggered: check.isCanaryTriggered || false,
+        };
       }
     }
 
-    if (!expressFailed) {
-      const elapsed = parseFloat((performance.now() - startTime).toFixed(2));
-      await writeAuditRow({
-        correlationId,
-        step: 'express_lane_clearance',
-        decision: 'allow',
-        reason: `${laneSelection.reason} [Trust: ${trustScore}/100, Latency: ${elapsed}ms]`,
-        ruleId: 'express_highway',
-        actor: 'system',
-      });
-      return {
-        finalDecision: 'allow',
-        reason: laneSelection.reason,
-        ruleId: 'express_highway',
-        riskScore: 5,
-        riskTier: 'low',
-        quoteHash,
-        latencyMs: elapsed,
-        lane: LANES.EXPRESS_LANE,
-        trustScore,
-        isSampled: false,
-      };
-    }
+    const elapsed = parseFloat((performance.now() - startTime).toFixed(2));
+    await writeAuditRow({
+      correlationId,
+      step: 'express_lane_clearance',
+      decision: 'allow',
+      reason: `${laneSelection.reason} [Trust: ${trustScore}/100, Latency: ${elapsed}ms]`,
+      ruleId: 'express_highway',
+      actor: 'system',
+    });
+    return {
+      finalDecision: 'allow',
+      reason: laneSelection.reason,
+      ruleId: 'express_highway',
+      riskScore: 5,
+      riskTier: 'low',
+      quoteHash,
+      latencyMs: elapsed,
+      lane: LANES.EXPRESS_LANE,
+      trustScore,
+      isSampled: false,
+    };
   }
 
   const stage1Checks = [

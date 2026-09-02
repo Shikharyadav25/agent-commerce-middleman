@@ -5,7 +5,7 @@
 [![Hot-Path Latency](https://img.shields.io/badge/Express%20Lane-%3C%200.1ms-brightgreen.svg)](#)
 [![Deterministic Hot-Path](https://img.shields.io/badge/Deep%20Inspection-%3C%201.5ms-brightgreen.svg)](#)
 [![Gemini Cloud AI](https://img.shields.io/badge/Cold--Path%20AI-Google%20Gemini%203.1-orange.svg)](https://deepmind.google/technologies/gemini/)
-[![Test Suite](https://img.shields.io/badge/Tests-46%2F46%20Passing-brightgreen.svg)](#)
+[![Test Suite](https://img.shields.io/badge/Tests-60%2F60%20Passing-brightgreen.svg)](#)
 [![Next.js 16](https://img.shields.io/badge/Dashboard-Next.js%2016%20Turbopack-black.svg)](https://nextjs.org/)
 [![Anthropic MCP](https://img.shields.io/badge/Protocol-Anthropic%20MCP-blueviolet.svg)](https://modelcontextprotocol.io/)
 
@@ -306,7 +306,7 @@ ACM comes fully pre-seeded with 5 widely recognized consumer platforms and real-
 ## 📊 Key Performance & Pitch Metrics
 
 ```
-  ⚡ < 0.1ms              🛡️ 100%                 📈 +35.0%               🧪 46 / 46
+  ⚡ < 0.1ms              🛡️ 100%                 📈 +35.0%               🧪 60 / 60
   Express Highway         Deterministic Safety    AOV Basket Lift         Tests Passing (< 1s)
   Microsecond clearance   Zero LLM on financial   Automated co-purchase   Full security, AP2 &
   for routine purchases   payment execution       recommendations         Razorpay test suite
