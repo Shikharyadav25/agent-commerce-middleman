@@ -24,6 +24,10 @@ import {
   Check,
   CreditCard,
   Building,
+  Sparkles,
+  BrainCircuit,
+  AlertTriangle,
+  Wrench,
 } from 'lucide-react';
 
 interface AuditLogRow {
@@ -62,6 +66,18 @@ interface AuditLogRow {
   };
 }
 
+interface ForensicReport {
+  verdict?: string;
+  issueType?: string;
+  severity?: string;
+  executiveSummary?: string;
+  primaryReason?: string;
+  culpritRule?: string;
+  keyThreatIndicators?: string[];
+  agentActionableInstructions?: string;
+  suggestedRemediation?: Record<string, unknown> | null;
+}
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 export default function AuditTimelinePage({
@@ -73,6 +89,7 @@ export default function AuditTimelinePage({
   const correlationId = resolvedParams.correlationId;
 
   const [logs, setLogs] = useState<AuditLogRow[]>([]);
+  const [report, setReport] = useState<ForensicReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,6 +121,25 @@ export default function AuditTimelinePage({
       // Sort in order of createdAt
       rows.sort((a: AuditLogRow, b: AuditLogRow) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
       setLogs(rows);
+
+      // Attempt to fetch dedicated NLP forensic incident report
+      try {
+        const repRes = await fetch(`${API_BASE}/v1/audit/${encodeURIComponent(correlationId)}/report`, {
+          cache: 'no-store',
+        });
+        if (repRes.ok) {
+          const repData = await repRes.json();
+          if (repData.forensicBrief) {
+            setReport({
+              ...repData.forensicBrief,
+              agentActionableInstructions: repData.diagnosis?.agentActionableInstructions,
+              suggestedRemediation: repData.diagnosis?.suggestedRemediation,
+            });
+          }
+        }
+      } catch {
+        // non-blocking
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to fetch audit records';
       console.warn('Audit fetch notice:', msg);
@@ -343,6 +379,146 @@ export default function AuditTimelinePage({
           )}
         </div>
       )}
+
+      {/* AI Forensic Diagnostic & Remediation Intelligence Card */}
+      {(() => {
+        const deniedStep = logs.find((l) => l.decision === 'deny');
+        const pendingStep = logs.find((l) => l.decision === 'pending');
+        const isIssue = Boolean(deniedStep || pendingStep || report?.verdict !== 'CLEARED');
+
+        const displayReport = report || (deniedStep ? {
+          verdict: 'DENIED_POLICY_VIOLATION',
+          issueType: deniedStep.ruleId?.includes('canary') || deniedStep.reason?.includes('honeytoken') ? 'MALICIOUS_ADVERSARIAL' : 'POLICY_VIOLATION',
+          severity: deniedStep.ruleId?.includes('canary') ? 'CRITICAL_THREAT' : 'HIGH_RISK',
+          executiveSummary: `Transaction blocked by in-flight safety guardrail [${deniedStep.ruleId || 'policy_engine'}]. Root cause: ${deniedStep.reason}.`,
+          primaryReason: deniedStep.reason,
+          culpritRule: deniedStep.ruleId || 'guardrail',
+          agentActionableInstructions: 'Halt repeated attempts. Verify agent authorization mandate or correct cart items before retrying.',
+        } : pendingStep ? {
+          verdict: 'HELD_FOR_OPERATOR_APPROVAL',
+          issueType: pendingStep.ruleId?.includes('drift') ? 'HALLUCINATION' : 'POLICY_VIOLATION',
+          severity: 'MODERATE_WARNING',
+          executiveSummary: `Transaction held for human review under rule [${pendingStep.ruleId || 'gate_threshold'}]. Root cause: ${pendingStep.reason}.`,
+          primaryReason: pendingStep.reason,
+          culpritRule: pendingStep.ruleId || 'gate',
+          agentActionableInstructions: 'Advise user to approve transaction on ACM Operator Dashboard or reduce order total.',
+        } : {
+          verdict: 'CLEARED',
+          issueType: 'VERIFIED_SAFE',
+          severity: 'INFORMATIONAL',
+          executiveSummary: 'Transaction cleared all deterministic safety checks with zero detected hallucinations or adversarial drift.',
+          primaryReason: 'All security stages verified safe.',
+          culpritRule: 'all_passed',
+        });
+
+        const isThreat = displayReport.issueType === 'MALICIOUS_ADVERSARIAL';
+        const isHallucination = displayReport.issueType === 'HALLUCINATION';
+
+        return (
+          <div className={`rounded-2xl border p-5 shadow-2xl transition-all ${
+            isThreat
+              ? 'bg-gradient-to-r from-red-950/40 via-zinc-900 to-zinc-950 border-red-500/30'
+              : isHallucination
+              ? 'bg-gradient-to-r from-amber-950/30 via-zinc-900 to-zinc-950 border-amber-500/30'
+              : isIssue
+              ? 'bg-gradient-to-r from-blue-950/30 via-zinc-900 to-zinc-950 border-blue-500/30'
+              : 'bg-gradient-to-r from-emerald-950/20 via-zinc-900 to-zinc-950 border-emerald-500/20'
+          }`}>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+              <div className="flex items-center space-x-2.5">
+                <div className={`w-9 h-9 rounded-xl flex items-center justify-center border ${
+                  isThreat
+                    ? 'bg-red-500/20 border-red-500/40 text-red-400'
+                    : isHallucination
+                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
+                    : 'bg-purple-500/20 border-purple-500/40 text-purple-400'
+                }`}>
+                  <BrainCircuit className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h3 className="text-xs font-bold text-white uppercase tracking-wider">
+                      AI Agent Forensic & Self-Correction Diagnostics
+                    </h3>
+                    <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-purple-500/10 text-purple-300 border border-purple-500/30">
+                      <Sparkles className="w-3 h-3 text-purple-400" />
+                      <span>NLP Engine</span>
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-zinc-400">
+                    Semantic root-cause diagnosis, hallucination detection, and machine-actionable instructions for paying agents
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border ${
+                  isThreat
+                    ? 'bg-red-500/15 text-red-400 border-red-500/30'
+                    : isHallucination
+                    ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                    : isIssue
+                    ? 'bg-blue-500/15 text-blue-400 border-blue-500/30'
+                    : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                }`}>
+                  {isThreat ? <AlertTriangle className="w-3.5 h-3.5" /> : <Shield className="w-3.5 h-3.5" />}
+                  <span>{displayReport.issueType?.replace('_', ' ')}</span>
+                </span>
+
+                {displayReport.severity && (
+                  <span className="px-2 py-1 rounded-md text-[10px] font-mono font-semibold bg-zinc-800 text-zinc-300 border border-zinc-700">
+                    {displayReport.severity}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Executive Summary Brief */}
+            <div className="rounded-xl bg-zinc-900/90 border border-zinc-800/80 p-3.5 space-y-2 mb-3">
+              <div className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider flex items-center space-x-1.5">
+                <span>📋</span>
+                <span>Forensic Executive Summary</span>
+              </div>
+              <p className="text-xs text-zinc-200 leading-relaxed font-sans">
+                {displayReport.executiveSummary}
+              </p>
+            </div>
+
+            {/* Agent Actionable Guidance & Suggested Remediation */}
+            {displayReport.agentActionableInstructions && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                <div className="rounded-xl bg-purple-950/20 border border-purple-500/20 p-3 space-y-1.5">
+                  <div className="text-[10px] uppercase font-bold text-purple-300 tracking-wider flex items-center space-x-1.5">
+                    <Wrench className="w-3.5 h-3.5 text-purple-400" />
+                    <span>Agent Self-Correction Instructions</span>
+                  </div>
+                  <p className="text-[11px] text-zinc-300 leading-relaxed">
+                    {displayReport.agentActionableInstructions}
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-zinc-900/90 border border-zinc-800/80 p-3 space-y-1.5">
+                  <div className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider flex items-center space-x-1.5">
+                    <span>💡</span>
+                    <span>Actionable Resolution Strategy</span>
+                  </div>
+                  <div className="text-[11px] text-zinc-300">
+                    {displayReport.suggestedRemediation ? (
+                      <pre className="text-[10px] font-mono text-emerald-400 bg-black/40 p-2 rounded-lg overflow-x-auto border border-zinc-800">
+                        {JSON.stringify(displayReport.suggestedRemediation, null, 2)}
+                      </pre>
+                    ) : (
+                      <p className="text-zinc-400">
+                        Rule triggered: <span className="font-mono text-white">{displayReport.culpritRule}</span>. No custom JSON payload needed.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Multi-Layer Zero-Trust Security Telemetry */}
       <div className="rounded-2xl bg-gradient-to-r from-blue-950/30 via-indigo-950/20 to-zinc-900 border border-blue-500/20 p-5 shadow-xl">

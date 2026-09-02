@@ -133,6 +133,95 @@ sequenceDiagram
 
 ---
 
+## 🧠 NLP Diagnostic, Self-Correction & Forensic Incident Architecture
+
+### Can LLMs Handle Agent Hallucinations, Failures, and Malicious Probes?
+When external autonomous AI agents (Claude, LangChain, Custom GPTs) execute purchases, they encounter failures caused by:
+1. **Hallucinations**: Parameter drift, price mismatch, intent divergence (user asked for bread, agent carted electronics), or out-of-bounds geofencing.
+2. **Malicious / Adversarial Probing**: Prompt injections, honeypot canary SKU access, anti-smurfing batch structuring, or runaway loop wallet depletion.
+3. **Cryptic Gateway Rejections**: Traditional HTTP `400 Bad Request` or `403 Forbidden` codes cause autonomous agents to crash, hallucinate fake states, or loop infinitely.
+
+ACM resolves this through a **Bimodal Decoupled Architecture**:
+
+```
+                                      BIMODAL SAFETY ARCHITECTURE
+    
+    External AI Agent ───────(POST /v1/payments)───────► [ ACM GATEKEEPER ]
+                                                                  │
+             ┌────────────────────────────────────────────────────┴────────────────────────────────────────────────────┐
+             ▼                                                                                                         ▼
+    [ HOT-PATH: < 1.5ms DETERMINISTIC ]                                                      [ COLD-PATH: NLP DIAGNOSTIC ENGINE ]
+    • 100% Zero-LLM Trust In-Flight Gate                                                     • Categorizes Issue: Hallucination vs Adversarial
+    • HMAC Timing-Safe Proof of Authority (AP2)                                              • Synthesizes Machine-Actionable Guidance
+    • Jaccard Invariance & Price Drift Bounds                                                • Generates Safe Parameter Remediation
+    • Anti-Smurfing & Canary Honeytoken Traps                                                • Produces Plain-English Executive Incident Brief
+             │                                                                                                         │
+             ├───────────────────► [ Razorpay Gateway ] (If Approved)                                                  │
+             │                                                                                                         ▼
+             └───────────────────► [ Real-Time Diagnostic Feedback ] ◄─────────────────────────────────────────────────┘
+                                   • Structured JSON Remediation to Calling Agent (Self-Healing Loop)
+                                   • Forensic Incident Intelligence Card on Operator Dashboard
+```
+
+### Why LLMs Must NEVER Sit on the Financial Hot-Path
+* ❌ **Latency**: LLMs add 500ms–2500ms of non-deterministic latency to checkout hot-paths (unacceptable for payments).
+* ❌ **Non-Determinism & Jailbreaks**: LLM gatekeepers can be bypassed via indirect prompt injection or adversarial suffix attacks.
+* ❌ **Financial Liability**: Letting an LLM "silently auto-rewrite" financial amounts or cart SKUs introduces silent parameter corruption and legal liability.
+
+### Why NLP is Transformative on the Diagnostic & Remediation Path
+* ✅ **Zero-Latency In-Process Synthesis**: ACM's embedded semantic diagnostic engine evaluates root causes in 0ms with zero token cost.
+* ✅ **Machine-to-Machine Self-Correction (A2A / A2G Protocol)**: Instead of dead-end errors, agents receive explicit natural language instructions and safe remediation payloads to adjust their cart and self-heal.
+* ✅ **Human Operator Forensics**: Complex telemetry (smurfing distribution, canary tripwires, temporal spikes) is translated into clear English executive summaries on the Operator Dashboard.
+
+---
+
+### The 4-Tier Issue Classification Taxonomy
+
+| Category | Typical Scenarios | ACM Diagnostic Response & Agent Guidance |
+|---|---|---|
+| **1. Hallucination** | • Semantic Intent Drift (Cart items don't match user prompt)<br>• Unit Price Drift (> 15% from catalog baseline)<br>• Geofence Pincode Mismatch<br>• Off-hours temporal anomaly | **Remediation**: Informs agent of intent mismatch, returns original user prompt tokens, and instructs agent to realign its catalog search. |
+| **2. Malicious / Adversarial** | • Probing Canary Honeytoken SKUs<br>• Anti-Smurfing Structuring Clustering<br>• Ordering Blacklisted Categories (crypto, gift cards)<br>• Runaway Burst Loops | **Remediation**: Halts agent execution immediately. Emits `CRITICAL_THREAT` warning. Circuit breaker auto-revokes credential in DB (`revoked: true`). |
+| **3. Policy Violation** | • Exceeding Per-Transaction Cap<br>• Exceeding Daily Budget Ceiling<br>• Unapproved Merchant Scope | **Remediation**: Calculates safe reduced quantity and exact excess amount in ₹. Proposes safe JSON parameter adjustments. |
+| **4. Operational / Technical** | • Expired quote TTL (> 10m)<br>• Replay of already-processed quote hash<br>• Gateway network timeout | **Remediation**: Instructs agent to generate fresh quote and re-attempt checkout without modifying underlying cart parameters. |
+
+---
+
+### Machine-to-Machine Self-Correction API Contract
+
+When a payment is denied or held for review, `/v1/payments` returns structured diagnostic intelligence:
+
+```json
+{
+  "status": "denied",
+  "reason": "quote ₹1,500 exceeds per-transaction cap ₹1,000 on mandate mnd_123",
+  "ruleId": "per_txn_cap",
+  "riskScore": 65,
+  "correlationId": "quote_456-1741018900",
+  "diagnosis": {
+    "status": "denied",
+    "issueType": "POLICY_VIOLATION",
+    "severity": "MODERATE_WARNING",
+    "failureCause": "quote ₹1,500 exceeds per-transaction cap ₹1,000",
+    "forensicSummary": "Budget Cap Exceeded: Quote total of ₹1,500.00 exceeds the agent's authorized per-transaction cap of ₹1,000.00.",
+    "agentActionableInstructions": "Reduce order quantity or choose a lower-priced alternative. The order exceeds the per-transaction limit by ₹500.00. Alternatively, request human operator sign-off.",
+    "suggestedRemediation": {
+      "action": "adjust_quantity_or_items",
+      "maxPermittedTotal": "₹1,000.00",
+      "suggestedQuantity": 2,
+      "suggestedTotalPaise": 100000
+    },
+    "requiresHumanApproval": false
+  }
+}
+```
+
+### Dedicated Diagnostic Endpoints & MCP Tools
+* **`POST /v1/diagnostics/resolve`**: Proactive resolution endpoint for agents or tools passing `{ correlationId, userIntentPrompt, errorReason }`.
+* **`GET /v1/audit/:correlationId/report`**: Generates full executive incident forensic brief with chronological timeline synthesis.
+* **MCP Tool `diagnose_payment_issue`**: Allows external assistants (Claude Desktop, LangChain) to query the gateway directly when encountering transaction barriers.
+
+---
+
 ## ⚡ Zero-Drawback Performance Guarantee (< 1.5ms Hot-Path Overhead)
 
 Adding extensive security checks usually introduces unacceptable latency or customer friction. ACM eliminates these drawbacks through **3 Core Design Patterns**:

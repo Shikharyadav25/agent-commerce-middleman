@@ -7,6 +7,10 @@ import { PrismaClient } from '@prisma/client';
 import { createOrder, createPaymentLink, razorpay } from './razorpay.js';
 import { evaluateTransaction } from '../../../packages/policy-engine/src/evaluate.js';
 import { checkDiscountCeiling } from '../../../packages/policy-engine/src/rules.js';
+import {
+  generateNLPDiagnosticReport,
+  generateIncidentForensicBrief,
+} from '../../../packages/policy-engine/src/diagnostics.js';
 import { getDynamicAddonSuggestions, computeGrowthMetrics } from './growth.js';
 
 const app = Fastify({ logger: true });
@@ -664,6 +668,144 @@ app.get('/v1/audit/:correlationId', async (request, reply) => {
   return logs;
 });
 
+app.get('/v1/audit/:correlationId/report', async (request, reply) => {
+  const { correlationId } = request.params;
+  const logs = await prisma.auditLogRow.findMany({
+    where: { correlationId },
+    orderBy: { createdAt: 'asc' },
+    include: {
+      transaction: {
+        include: {
+          quote: true,
+          mandate: {
+            include: { agent: true },
+          },
+          pendingApproval: true,
+        },
+      },
+    },
+  });
+
+  const tx =
+    logs[0]?.transaction ||
+    (await prisma.transaction.findUnique({
+      where: { correlationId },
+      include: {
+        quote: true,
+        mandate: { include: { agent: true } },
+        pendingApproval: true,
+      },
+    }));
+
+  if (!logs || logs.length === 0) {
+    if (!tx) {
+      return reply.code(404).send({ error: 'No audit records found for correlationId: ' + correlationId });
+    }
+  }
+
+  const forensicBrief = generateIncidentForensicBrief(logs, tx);
+  const primaryStep = logs.find((l) => l.decision === 'deny') || logs.find((l) => l.decision === 'pending');
+
+  let diagnosis = null;
+  if (primaryStep) {
+    diagnosis = generateNLPDiagnosticReport({
+      ruleId: primaryStep.ruleId,
+      decision: primaryStep.decision,
+      reason: primaryStep.reason,
+      quoteTotal: tx?.quote?.total,
+      items: tx?.quote?.items || [],
+      mandate: tx?.mandate,
+      agent: tx?.mandate?.agent,
+    });
+  }
+
+  return {
+    correlationId,
+    transactionId: tx?.id || null,
+    forensicBrief,
+    diagnosis,
+    stepCount: logs.length,
+    currentState: tx?.state || (primaryStep?.decision === 'deny' ? 'failed' : 'unknown'),
+  };
+});
+
+app.post('/v1/diagnostics/resolve', async (request, reply) => {
+  const {
+    correlationId,
+    quoteId,
+    userIntentPrompt,
+    ruleId,
+    errorReason,
+    deliveryPincode,
+  } = request.body || {};
+
+  let items = [];
+  let quoteTotal = 0;
+  let mandate = {};
+  let agent = {};
+  let targetRuleId = ruleId;
+  let targetReason = errorReason;
+  let targetDecision = 'deny';
+
+  if (correlationId) {
+    const logs = await prisma.auditLogRow.findMany({
+      where: { correlationId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        transaction: {
+          include: {
+            quote: true,
+            mandate: { include: { agent: true } },
+          },
+        },
+      },
+    });
+
+    const culprit = logs.find((l) => l.decision === 'deny' || l.decision === 'pending');
+    if (culprit) {
+      targetRuleId = targetRuleId || culprit.ruleId;
+      targetReason = targetReason || culprit.reason;
+      targetDecision = culprit.decision;
+    }
+
+    const tx = logs[0]?.transaction;
+    if (tx) {
+      items = tx.quote?.items || [];
+      quoteTotal = tx.quote?.total || 0;
+      mandate = tx.mandate || {};
+      agent = tx.mandate?.agent || {};
+    }
+  } else if (quoteId) {
+    const quote = await prisma.quote.findUnique({ where: { id: quoteId } });
+    if (quote) {
+      items = quote.items || [];
+      quoteTotal = quote.total || 0;
+    }
+  }
+
+  const diagnosis = generateNLPDiagnosticReport({
+    ruleId: targetRuleId || 'policy_check',
+    decision: targetDecision,
+    reason: targetReason || 'Transaction resolution requested',
+    quoteTotal,
+    items,
+    userIntentPrompt,
+    mandate,
+    agent,
+    deliveryPincode,
+    allowedPincodes: ['560001', '560038', '110001', '400001'],
+  });
+
+  return {
+    status: 'resolved',
+    correlationId: correlationId || null,
+    diagnosis,
+    agentActionableInstructions: diagnosis.agentActionableInstructions,
+    suggestedRemediation: diagnosis.suggestedRemediation,
+    forensicSummary: diagnosis.forensicSummary,
+  };
+});
+
 // ---- Transactions ----
 app.get('/v1/transactions', async (request) => {
   const { agentId, state, limit = 50 } = request.query || {};
@@ -1045,13 +1187,31 @@ app.post('/v1/payments', async (request, reply) => {
         data: { revoked: true },
       });
     }
+
+    const diagnosis = generateNLPDiagnosticReport({
+      ruleId: result.ruleId,
+      decision: 'deny',
+      reason: result.reason,
+      quoteTotal: quote.total,
+      items: quote.items,
+      userIntentPrompt: userIntentPrompt || request.headers['x-intent-prompt'] || null,
+      mandate,
+      agent,
+      deliveryPincode,
+      allowedPincodes: ['560001', '560038', '110001', '400001'],
+      riskScore: result.riskScore,
+      latencyMs: result.latencyMs,
+    });
+
     return {
       status: 'denied',
       reason: result.reason,
+      ruleId: result.ruleId,
       riskScore: result.riskScore,
       riskTier: result.riskTier,
       latencyMs: result.latencyMs,
       correlationId,
+      diagnosis,
     };
   }
 
@@ -1077,15 +1237,33 @@ app.post('/v1/payments', async (request, reply) => {
         expiresAt: new Date(Date.now() + 15 * 60 * 1000),
       },
     });
+
+    const diagnosis = generateNLPDiagnosticReport({
+      ruleId: result.ruleId,
+      decision: 'pending',
+      reason: result.reason,
+      quoteTotal: quote.total,
+      items: quote.items,
+      userIntentPrompt: userIntentPrompt || request.headers['x-intent-prompt'] || null,
+      mandate,
+      agent,
+      deliveryPincode,
+      allowedPincodes: ['560001', '560038', '110001', '400001'],
+      riskScore: result.riskScore,
+      latencyMs: result.latencyMs,
+    });
+
     return {
       status: 'awaiting_human_approval',
       reason: result.reason,
+      ruleId: result.ruleId,
       transactionId: transaction.id,
       correlationId,
       riskScore: result.riskScore,
       riskTier: result.riskTier,
       latencyMs: result.latencyMs,
       quoteHash: result.quoteHash,
+      diagnosis,
     };
   }
 

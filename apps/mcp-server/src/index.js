@@ -109,6 +109,57 @@ server.tool(
       });
       const payData = await payRes.json();
 
+      if (payData.status === 'denied') {
+        const diag = payData.diagnosis;
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  status: 'TRANSACTION_BLOCKED',
+                  reason: payData.reason,
+                  issueType: diag?.issueType || 'POLICY_VIOLATION',
+                  forensicSummary: diag?.forensicSummary || payData.reason,
+                  agentActionableGuidance: diag?.agentActionableInstructions || 'Review user request and policy limits.',
+                  suggestedRemediation: diag?.suggestedRemediation || null,
+                  safetyWarning: diag?.safetyWarning || null,
+                  correlationId: payData.correlationId,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      if (payData.status === 'awaiting_human_approval') {
+        const diag = payData.diagnosis;
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  status: 'HELD_FOR_HUMAN_APPROVAL',
+                  reason: payData.reason,
+                  issueType: diag?.issueType || 'POLICY_THRESHOLD',
+                  forensicSummary: diag?.forensicSummary || payData.reason,
+                  agentActionableGuidance: diag?.agentActionableInstructions || 'Held for human review on ACM dashboard.',
+                  suggestedRemediation: diag?.suggestedRemediation || null,
+                  transactionId: payData.transactionId,
+                  correlationId: payData.correlationId,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
       return {
         content: [
           {
@@ -246,6 +297,23 @@ server.tool(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason }),
+    });
+  }
+);
+
+server.tool(
+  'diagnose_payment_issue',
+  'AI Agent Self-Correction & Diagnostic Tool: Call this tool when an autonomous payment fails, is gated, or gets blocked. Returns root-cause analysis (hallucination vs malicious threat vs policy cap) and step-by-step actionable instructions on how to adjust your prompt or cart.',
+  {
+    correlationId: z.string().optional().describe('The correlationId of the failed or gated transaction'),
+    userIntentPrompt: z.string().optional().describe('Original natural language prompt from user (e.g. "order bread under ₹100")'),
+    errorReason: z.string().optional().describe('The error or denial reason received'),
+  },
+  async ({ correlationId, userIntentPrompt, errorReason }) => {
+    return await safeFetch(`${API_BASE}/v1/diagnostics/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ correlationId, userIntentPrompt, errorReason }),
     });
   }
 );
