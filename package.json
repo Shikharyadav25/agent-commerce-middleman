@@ -20,6 +20,7 @@
     "simulate:growth": "node scripts/simulate-agents.js",
     "merchant:onboard": "node scripts/onboard-merchant.js",
     "demo:concurrent": "node scripts/demo-concurrent-agents.js",
+    "test:nlp": "node scripts/test-gemini-analyst.js",
     "test": "node --test packages/policy-engine/src/*.test.js apps/api/test/*.test.js",
     "test:unit": "node --test packages/policy-engine/src/*.test.js",
     "test:integration": "node --test apps/api/test/*.test.js",

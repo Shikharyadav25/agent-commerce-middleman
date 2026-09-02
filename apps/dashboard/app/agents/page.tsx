@@ -587,19 +587,29 @@ export default function AgentsHubPage() {
                   </div>
                 </div>
 
-                {/* Metrics */}
-                <div className="mt-4 pt-4 border-t border-zinc-800/80 flex items-center justify-between text-xs">
-                  <div>
-                    <span className="text-zinc-500 block text-[11px]">Total Purchases</span>
-                    <span className="font-bold text-white">{agent.stats?.totalTransactions || 0} orders</span>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-zinc-500 block text-[11px]">Lifetime Spend</span>
-                    <span className="font-bold text-purple-400">
-                      ₹{((agent.stats?.totalSpentPaise || 0) / 100).toLocaleString('en-IN')}
-                    </span>
-                  </div>
-                </div>
+                {/* Adaptive Trust Score & Security Lane */}
+                {(() => {
+                  const trustScore = agent.stats?.trustScore ?? 60;
+                  const eligibleLane = agent.stats?.eligibleLane || (trustScore >= 70 ? 'EXPRESS_LANE' : 'DEEP_INSPECTION_LANE');
+                  return (
+                    <div className="mt-3.5 flex items-center justify-between p-2.5 rounded-xl bg-zinc-950/70 border border-zinc-800/80">
+                      <div className="flex items-center space-x-2">
+                        <div className={`w-2 h-2 rounded-full ${trustScore >= 70 ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`} />
+                        <span className="text-[11px] text-zinc-400">Trust Score:</span>
+                        <span className={`text-xs font-bold font-mono ${trustScore >= 70 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                          {trustScore}/100
+                        </span>
+                      </div>
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
+                        eligibleLane === 'EXPRESS_LANE'
+                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                          : 'bg-indigo-500/10 text-indigo-400 border-indigo-500/30'
+                      }`}>
+                        {eligibleLane === 'EXPRESS_LANE' ? '⚡ Express Highway' : '🔬 Deep Inspection'}
+                      </span>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Action Button */}

@@ -19,6 +19,7 @@ import {
   decideGate,
 } from './rules.js';
 import { verifyUserIntentProof } from './mandate.js';
+import { selectTransactionSecurityLane, LANES } from './adaptive.js';
 
 // writeAuditRow is passed in so this package stays framework-agnostic (no direct DB import)
 export async function evaluateTransaction({
@@ -34,6 +35,9 @@ export async function evaluateTransaction({
   recentTransactions = [],
   recentTimestamps = [],
   recentDenialCount = 0,
+  paidTransactionCount = 0,
+  forceDeepInspection = false,
+  probabilisticSampleRate = 0.05,
   deliveryPincode = null,
   allowedPincodes = [],
   proofOfAuthority = null,
@@ -68,7 +72,68 @@ export async function evaluateTransaction({
       quoteHash,
       latencyMs: elapsed,
       shouldRevokeAgent: true,
+      lane: LANES.DEEP_INSPECTION_LANE,
+      trustScore: 0,
+      isSampled: false,
     };
+  }
+
+  // 3. Adaptive Security Tiers & Lane Selection (Express Lane vs Deep Inspection)
+  const laneSelection = selectTransactionSecurityLane({
+    agent,
+    quoteTotal,
+    category,
+    merchantId,
+    mandate,
+    paidTransactionCount,
+    recentDenialCount,
+    forceDeepInspection,
+    probabilisticSampleRate,
+  });
+
+  const { lane, trustScore, isSampled } = laneSelection;
+
+  // FAST-TRACK HIGHWAY: Express Lane (< 0.1ms) for routine trusted purchases
+  if (lane === LANES.EXPRESS_LANE) {
+    const expressSanityChecks = [
+      checkAgentValid(agent),
+      checkCanarySKUs(items),
+      checkPerTransactionCap(mandate, quoteTotal),
+      checkDailyCap(mandate, todaysCumulativeSpend, quoteTotal),
+      checkMandateCoverage(mandate, merchantId, category),
+    ];
+
+    let expressFailed = null;
+    for (const check of expressSanityChecks) {
+      if (check.decision === 'deny') {
+        expressFailed = check;
+        break;
+      }
+    }
+
+    if (!expressFailed) {
+      const elapsed = parseFloat((performance.now() - startTime).toFixed(2));
+      await writeAuditRow({
+        correlationId,
+        step: 'express_lane_clearance',
+        decision: 'allow',
+        reason: `${laneSelection.reason} [Trust: ${trustScore}/100, Latency: ${elapsed}ms]`,
+        ruleId: 'express_highway',
+        actor: 'system',
+      });
+      return {
+        finalDecision: 'allow',
+        reason: laneSelection.reason,
+        ruleId: 'express_highway',
+        riskScore: 5,
+        riskTier: 'low',
+        quoteHash,
+        latencyMs: elapsed,
+        lane: LANES.EXPRESS_LANE,
+        trustScore,
+        isSampled: false,
+      };
+    }
   }
 
   const stage1Checks = [
@@ -237,5 +302,8 @@ export async function evaluateTransaction({
     riskTier: riskEval.riskTier,
     quoteHash,
     latencyMs: elapsed,
+    lane,
+    trustScore,
+    isSampled,
   };
 }

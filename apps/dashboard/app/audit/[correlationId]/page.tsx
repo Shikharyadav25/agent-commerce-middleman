@@ -76,6 +76,18 @@ interface ForensicReport {
   keyThreatIndicators?: string[];
   agentActionableInstructions?: string;
   suggestedRemediation?: Record<string, unknown> | null;
+  geminiReport?: {
+    source?: string;
+    model?: string;
+    verdict?: string;
+    confidence?: number;
+    threatLevel?: string;
+    primaryThreat?: string;
+    executiveBrief?: string;
+    recommendedAction?: string;
+    shouldRevokeAgent?: boolean;
+    suggestedRemediation?: Record<string, unknown> | null;
+  } | null;
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
@@ -134,6 +146,7 @@ export default function AuditTimelinePage({
               ...repData.forensicBrief,
               agentActionableInstructions: repData.diagnosis?.agentActionableInstructions,
               suggestedRemediation: repData.diagnosis?.suggestedRemediation,
+              geminiReport: repData.geminiReport || null,
             });
           }
         }
@@ -514,6 +527,56 @@ export default function AuditTimelinePage({
                     )}
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* Google Gemini AI Security Analyst Card */}
+            {displayReport.geminiReport && (
+              <div className="rounded-xl bg-gradient-to-r from-blue-950/40 via-indigo-950/30 to-purple-950/40 border border-indigo-500/40 p-4 mt-3 space-y-2.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="flex items-center space-x-2">
+                    <Sparkles className="w-4 h-4 text-indigo-400" />
+                    <span className="text-xs font-bold text-white uppercase tracking-wider">
+                      Google Gemini Security Analyst
+                    </span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full font-mono bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      {displayReport.geminiReport.model || 'gemini-1.5-flash'}
+                    </span>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border ${
+                      displayReport.geminiReport.verdict === 'REVOKE_ACCESS'
+                        ? 'bg-red-500/20 text-red-400 border-red-500/40'
+                        : displayReport.geminiReport.verdict === 'SAFE_TO_CONTINUE'
+                        ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+                        : 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                    }`}>
+                      Verdict: {displayReport.geminiReport.verdict?.replace(/_/g, ' ')}
+                    </span>
+                    {typeof displayReport.geminiReport.confidence === 'number' && (
+                      <span className="text-[10px] font-mono text-zinc-400">
+                        {Math.round(displayReport.geminiReport.confidence * 100)}% Confidence
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <p className="text-xs text-zinc-200 leading-relaxed font-sans">
+                  {displayReport.geminiReport.executiveBrief}
+                </p>
+
+                {displayReport.geminiReport.recommendedAction && (
+                  <div className="text-[11px] text-zinc-400 pt-2 border-t border-indigo-500/20 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <span>
+                      <strong className="text-zinc-300">Recommended Action:</strong> {displayReport.geminiReport.recommendedAction}
+                    </span>
+                    {displayReport.geminiReport.shouldRevokeAgent && (
+                      <span className="text-red-400 font-semibold text-[10px] bg-red-950/60 px-2 py-0.5 rounded border border-red-500/30 self-start sm:self-auto">
+                        Agent Access Revoked
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>

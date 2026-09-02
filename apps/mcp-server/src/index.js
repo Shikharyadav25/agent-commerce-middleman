@@ -111,6 +111,7 @@ server.tool(
 
       if (payData.status === 'denied') {
         const diag = payData.diagnosis;
+        const gemini = payData.geminiReport;
         return {
           content: [
             {
@@ -119,12 +120,16 @@ server.tool(
                 {
                   status: 'TRANSACTION_BLOCKED',
                   reason: payData.reason,
+                  agentRevoked: Boolean(payData.agentRevoked),
+                  geminiVerdict: gemini?.verdict || null,
+                  geminiBrief: gemini?.executiveBrief || null,
                   issueType: diag?.issueType || 'POLICY_VIOLATION',
                   forensicSummary: diag?.forensicSummary || payData.reason,
-                  agentActionableGuidance: diag?.agentActionableInstructions || 'Review user request and policy limits.',
-                  suggestedRemediation: diag?.suggestedRemediation || null,
+                  agentActionableGuidance: gemini?.recommendedAction || diag?.agentActionableInstructions || 'Review user request and policy limits.',
+                  suggestedRemediation: gemini?.suggestedRemediation || diag?.suggestedRemediation || null,
                   safetyWarning: diag?.safetyWarning || null,
                   correlationId: payData.correlationId,
+                  geminiReport: gemini || null,
                 },
                 null,
                 2
@@ -137,6 +142,7 @@ server.tool(
 
       if (payData.status === 'awaiting_human_approval') {
         const diag = payData.diagnosis;
+        const gemini = payData.geminiReport;
         return {
           content: [
             {
@@ -145,12 +151,15 @@ server.tool(
                 {
                   status: 'HELD_FOR_HUMAN_APPROVAL',
                   reason: payData.reason,
+                  geminiVerdict: gemini?.verdict || 'HOLD_FOR_HUMAN_REVIEW',
+                  geminiBrief: gemini?.executiveBrief || null,
                   issueType: diag?.issueType || 'POLICY_THRESHOLD',
                   forensicSummary: diag?.forensicSummary || payData.reason,
-                  agentActionableGuidance: diag?.agentActionableInstructions || 'Held for human review on ACM dashboard.',
-                  suggestedRemediation: diag?.suggestedRemediation || null,
+                  agentActionableGuidance: gemini?.recommendedAction || diag?.agentActionableInstructions || 'Held for human review on ACM dashboard.',
+                  suggestedRemediation: gemini?.suggestedRemediation || diag?.suggestedRemediation || null,
                   transactionId: payData.transactionId,
                   correlationId: payData.correlationId,
+                  geminiReport: gemini || null,
                 },
                 null,
                 2
@@ -308,12 +317,13 @@ server.tool(
     correlationId: z.string().optional().describe('The correlationId of the failed or gated transaction'),
     userIntentPrompt: z.string().optional().describe('Original natural language prompt from user (e.g. "order bread under ₹100")'),
     errorReason: z.string().optional().describe('The error or denial reason received'),
+    buyerAgentExplanation: z.string().optional().describe('Your self-explanation or defense for selecting the cart items'),
   },
-  async ({ correlationId, userIntentPrompt, errorReason }) => {
+  async ({ correlationId, userIntentPrompt, errorReason, buyerAgentExplanation }) => {
     return await safeFetch(`${API_BASE}/v1/diagnostics/resolve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ correlationId, userIntentPrompt, errorReason }),
+      body: JSON.stringify({ correlationId, userIntentPrompt, errorReason, buyerAgentExplanation }),
     });
   }
 );

@@ -11,6 +11,11 @@ import {
   generateNLPDiagnosticReport,
   generateIncidentForensicBrief,
 } from '../../../packages/policy-engine/src/diagnostics.js';
+import {
+  evaluateAgentAnomalyWithGemini,
+  GEMINI_VERDICTS,
+} from '../../../packages/policy-engine/src/gemini-analyst.js';
+import { computeAgentTrustScore, LANES } from '../../../packages/policy-engine/src/adaptive.js';
 import { getDynamicAddonSuggestions, computeGrowthMetrics } from './growth.js';
 
 const app = Fastify({ logger: true });
@@ -331,6 +336,21 @@ app.get('/v1/agents', async () => {
         },
       });
 
+      const denialCount = await prisma.auditLogRow.count({
+        where: {
+          decision: 'deny',
+          transaction: { mandateId: { in: mandateIds } },
+        },
+      });
+
+      const trustScore = computeAgentTrustScore({
+        paidCount: paidTransactions.length,
+        denialCount,
+      });
+
+      const eligibleLane =
+        trustScore >= 70 && paidTransactions.length >= 2 ? LANES.EXPRESS_LANE : LANES.DEEP_INSPECTION_LANE;
+
       const primaryMandate = agent.mandates[0] || null;
       const lastActiveAt = transactions[0]?.createdAt || agent.createdAt;
 
@@ -349,6 +369,9 @@ app.get('/v1/agents', async () => {
           autoApproveThresholdPaise: primaryMandate?.autoApproveThreshold || 50000,
           pendingApprovals: pendingApprovalsCount,
           lastActiveAt,
+          trustScore,
+          denialCount,
+          eligibleLane,
           recentTransactions: transactions.slice(0, 5),
         },
       };
@@ -452,6 +475,57 @@ app.patch('/v1/agents/:id/status', async (request, reply) => {
   });
 
   return { success: true, agent: updated };
+});
+
+app.post('/v1/agents/:id/investigate', async (request, reply) => {
+  const { id } = request.params;
+  const agent = await prisma.agent.findFirst({
+    where: { OR: [{ id }, { name: id }] },
+  });
+
+  if (!agent) {
+    return reply.code(404).send({ error: 'Agent not found' });
+  }
+
+  const {
+    userIntentPrompt,
+    cart = [],
+    ruleId = 'operator_security_audit',
+    reason = 'Manual operator security investigation requested',
+    quoteTotal = 0,
+    deliveryPincode = null,
+  } = request.body || {};
+
+  const mandate = await prisma.mandate.findFirst({
+    where: { agentId: agent.id },
+  });
+
+  const geminiReport = await evaluateAgentAnomalyWithGemini({
+    agent,
+    userIntentPrompt,
+    cart,
+    ruleId,
+    reason,
+    quoteTotal,
+    mandate: mandate || {},
+    deliveryPincode,
+  });
+
+  let revoked = agent.revoked;
+  if (geminiReport.shouldRevokeAgent && !agent.revoked) {
+    await prisma.agent.update({
+      where: { id: agent.id },
+      data: { revoked: true },
+    });
+    revoked = true;
+  }
+
+  return {
+    agentId: agent.id,
+    agentName: agent.name,
+    revoked,
+    geminiReport,
+  };
 });
 
 app.post('/v1/quotes', async (request, reply) => {
@@ -707,6 +781,7 @@ app.get('/v1/audit/:correlationId/report', async (request, reply) => {
   const primaryStep = logs.find((l) => l.decision === 'deny') || logs.find((l) => l.decision === 'pending');
 
   let diagnosis = null;
+  let geminiReport = null;
   if (primaryStep) {
     diagnosis = generateNLPDiagnosticReport({
       ruleId: primaryStep.ruleId,
@@ -717,6 +792,16 @@ app.get('/v1/audit/:correlationId/report', async (request, reply) => {
       mandate: tx?.mandate,
       agent: tx?.mandate?.agent,
     });
+
+    geminiReport = await evaluateAgentAnomalyWithGemini({
+      agent: tx?.mandate?.agent,
+      userIntentPrompt: tx?.userIntentPrompt || null,
+      cart: tx?.quote?.items || [],
+      ruleId: primaryStep.ruleId,
+      reason: primaryStep.reason,
+      quoteTotal: tx?.quote?.total,
+      mandate: tx?.mandate,
+    });
   }
 
   return {
@@ -724,6 +809,7 @@ app.get('/v1/audit/:correlationId/report', async (request, reply) => {
     transactionId: tx?.id || null,
     forensicBrief,
     diagnosis,
+    geminiReport,
     stepCount: logs.length,
     currentState: tx?.state || (primaryStep?.decision === 'deny' ? 'failed' : 'unknown'),
   };
@@ -734,6 +820,8 @@ app.post('/v1/diagnostics/resolve', async (request, reply) => {
     correlationId,
     quoteId,
     userIntentPrompt,
+    buyerAgentExplanation,
+    explanation,
     ruleId,
     errorReason,
     deliveryPincode,
@@ -796,13 +884,26 @@ app.post('/v1/diagnostics/resolve', async (request, reply) => {
     allowedPincodes: ['560001', '560038', '110001', '400001'],
   });
 
+  const geminiReport = await evaluateAgentAnomalyWithGemini({
+    agent,
+    userIntentPrompt,
+    buyerAgentExplanation: buyerAgentExplanation || explanation || null,
+    cart: items,
+    ruleId: targetRuleId,
+    reason: targetReason,
+    quoteTotal,
+    mandate,
+    deliveryPincode,
+  });
+
   return {
     status: 'resolved',
     correlationId: correlationId || null,
     diagnosis,
-    agentActionableInstructions: diagnosis.agentActionableInstructions,
-    suggestedRemediation: diagnosis.suggestedRemediation,
-    forensicSummary: diagnosis.forensicSummary,
+    geminiReport,
+    agentActionableInstructions: geminiReport.recommendedAction || diagnosis.agentActionableInstructions,
+    suggestedRemediation: geminiReport.suggestedRemediation || diagnosis.suggestedRemediation,
+    forensicSummary: geminiReport.executiveBrief || diagnosis.forensicSummary,
   };
 });
 
@@ -1156,6 +1257,14 @@ app.post('/v1/payments', async (request, reply) => {
   });
   const isFirstTimeMerchant = priorApprovedCount === 0;
 
+  // Calculate total successful paid transactions for dynamic agent trust scoring
+  const paidTransactionCount = await prisma.transaction.count({
+    where: {
+      mandate: { agentId: agent.id },
+      state: 'paid',
+    },
+  });
+
   const correlationId = quote.id + '-' + Date.now();
 
   const result = await evaluateTransaction({
@@ -1171,6 +1280,7 @@ app.post('/v1/payments', async (request, reply) => {
     recentTransactions,
     recentTimestamps,
     recentDenialCount: recentDenials,
+    paidTransactionCount,
     deliveryPincode,
     allowedPincodes: ['560001', '560038', '110001', '400001'],
     proofOfAuthority: proofOfAuthority || request.headers['x-proof-of-authority'] || null,
@@ -1181,10 +1291,34 @@ app.post('/v1/payments', async (request, reply) => {
   });
 
   if (result.finalDecision === 'deny') {
-    if (result.shouldRevokeAgent || result.isCanaryTriggered) {
+    const geminiReport = await evaluateAgentAnomalyWithGemini({
+      agent,
+      userIntentPrompt: userIntentPrompt || request.headers['x-intent-prompt'] || null,
+      cart: quote.items || [],
+      ruleId: result.ruleId,
+      reason: result.reason,
+      quoteTotal: quote.total,
+      mandate,
+      deliveryPincode,
+      recentTransactions,
+    });
+
+    const shouldRevoke = result.shouldRevokeAgent || result.isCanaryTriggered || geminiReport.shouldRevokeAgent;
+
+    if (shouldRevoke) {
       await prisma.agent.update({
         where: { id: agent.id },
         data: { revoked: true },
+      });
+      await prisma.auditLogRow.create({
+        data: {
+          correlationId,
+          step: 'ai_security_analyst',
+          decision: 'deny',
+          reason: `[Gemini AI Analyst] Agent revoked (${geminiReport.primaryThreat}): ${geminiReport.executiveBrief}`,
+          ruleId: 'gemini_access_revocation',
+          actor: 'gemini_ai',
+        },
       });
     }
 
@@ -1211,7 +1345,12 @@ app.post('/v1/payments', async (request, reply) => {
       riskTier: result.riskTier,
       latencyMs: result.latencyMs,
       correlationId,
+      lane: result.lane,
+      trustScore: result.trustScore,
+      isSampled: result.isSampled,
+      agentRevoked: shouldRevoke,
       diagnosis,
+      geminiReport,
     };
   }
 
@@ -1238,6 +1377,50 @@ app.post('/v1/payments', async (request, reply) => {
       },
     });
 
+    const geminiReport = await evaluateAgentAnomalyWithGemini({
+      agent,
+      userIntentPrompt: userIntentPrompt || request.headers['x-intent-prompt'] || null,
+      cart: quote.items || [],
+      ruleId: result.ruleId,
+      reason: result.reason,
+      quoteTotal: quote.total,
+      mandate,
+      deliveryPincode,
+      recentTransactions,
+    });
+
+    let agentRevoked = false;
+    if (geminiReport.shouldRevokeAgent) {
+      agentRevoked = true;
+      await prisma.agent.update({
+        where: { id: agent.id },
+        data: { revoked: true },
+      });
+      await prisma.auditLogRow.create({
+        data: {
+          correlationId,
+          transactionId: transaction.id,
+          step: 'ai_security_analyst',
+          decision: 'deny',
+          reason: `[Gemini AI Analyst] Escalated to revocation (${geminiReport.primaryThreat}): ${geminiReport.executiveBrief}`,
+          ruleId: 'gemini_access_revocation',
+          actor: 'gemini_ai',
+        },
+      });
+    } else {
+      await prisma.auditLogRow.create({
+        data: {
+          correlationId,
+          transactionId: transaction.id,
+          step: 'ai_security_analyst',
+          decision: geminiReport.verdict === 'SAFE_TO_CONTINUE' ? 'allow' : 'pending',
+          reason: `[Gemini AI Analyst] Verdict ${geminiReport.verdict} (${geminiReport.primaryThreat}): ${geminiReport.executiveBrief}`,
+          ruleId: 'gemini_security_audit',
+          actor: 'gemini_ai',
+        },
+      });
+    }
+
     const diagnosis = generateNLPDiagnosticReport({
       ruleId: result.ruleId,
       decision: 'pending',
@@ -1254,8 +1437,8 @@ app.post('/v1/payments', async (request, reply) => {
     });
 
     return {
-      status: 'awaiting_human_approval',
-      reason: result.reason,
+      status: agentRevoked ? 'denied' : 'awaiting_human_approval',
+      reason: agentRevoked ? 'revoked by gemini ai security analyst' : result.reason,
       ruleId: result.ruleId,
       transactionId: transaction.id,
       correlationId,
@@ -1263,7 +1446,12 @@ app.post('/v1/payments', async (request, reply) => {
       riskTier: result.riskTier,
       latencyMs: result.latencyMs,
       quoteHash: result.quoteHash,
+      lane: result.lane,
+      trustScore: result.trustScore,
+      isSampled: result.isSampled,
+      agentRevoked,
       diagnosis,
+      geminiReport,
     };
   }
 
@@ -1305,7 +1493,11 @@ app.post('/v1/payments', async (request, reply) => {
     riskTier: result.riskTier,
     latencyMs: result.latencyMs,
     quoteHash: result.quoteHash,
+    lane: result.lane,
+    trustScore: result.trustScore,
+    isSampled: result.isSampled,
   };
+
 });
 
 // ---- ACP (Agentic Commerce Protocol) Adapter ----

@@ -34,20 +34,24 @@ External LLM Agent ────────────────(Direct API A
 
 ---
 
-## 🛡️ The Solution: The Razorpay ACM Architecture
+## 🛡️ The Solution: Adaptive Bimodal Zero-Trust Architecture
 
-Razorpay ACM acts as an intelligent, zero-trust security and growth gatekeeper on the transaction hot-path:
+Razorpay ACM operates on an industry-proven **Bimodal Architecture** separating financial authorization from AI diagnostic analysis:
 
 ```
-✅ THE RAZORPAY ACM SOLUTION (In-Flight Zero-Trust Middleman)
-External LLM Agent ──► [ ACM ZERO-TRUST GATEKEEPER (< 1.5ms) ] ──► Razorpay Payments
-                         │
-                         ├── ⚡ Deterministic 6-Layer Policy Hot-Path (< 1.5ms)
-                         ├── ✍️ Cryptographic Proof of Authority (Google AP2)
-                         ├── 🪤 Canary Honeytokens & Autonomous Circuit Breaker
-                         ├── 🖥️ Real-Time Human Review Dashboard (SSE Push)
-                         ├── 🧠 Machine-to-Machine Self-Correction (NLP Diagnostics)
-                         └── 📈 AI Growth Engine (+35% Basket AOV Lift)
+                      INCOMING AGENT TRANSACTION
+                                  │
+       ┌──────────────────────────┴──────────────────────────┐
+       ▼                                                     ▼
+[ HOT-PATH: 100% DETERMINISTIC (< 1.5ms) ]       [ COLD-PATH: ISOLATED GEMINI AI ]
+• 🚗 EXPRESS LANE (< 0.1ms):                     • 🗣️ AGENT INTERROGATION:
+  Routine low-risk purchases (bread, milk, cabs)   Interrogates buyer reasoning on errors
+  by trusted agents bypass heavy checks.         • 🔍 FORENSIC ANALYSIS:
+• 🔬 DEEP INSPECTION LANE:                         Distinguishes benign hallucinations from
+  6-layer security for high-risk categories,       deliberate prompt injection attacks.
+  new agents, or 5% random spot-checks.          • 🛑 AUTO-REVOCATION:
+• 💳 RAZORPAY GATEWAY LOCKING                      Advises gateway to revoke bad actors
+  (SHA-256 cart hash pinned in order receipt)      or guide buyers to self-heal.
 ```
 
 ---
@@ -58,9 +62,11 @@ Every feature in Razorpay ACM is engineered to solve a critical vulnerability or
 
 ---
 
-### 1. ⚡ Sub-1.5ms In-Flight Hot-Path Gatekeeper
-* **The Challenge**: Traditional safety solutions rely on secondary LLMs to judge transactions, introducing 1–3 seconds of latency, non-deterministic decisions, and prompt injection vulnerabilities.
-* **How ACM Solves It**: ACM runs a 100% zero-LLM deterministic evaluation pipeline in pure in-memory JavaScript (< 1.5ms latency). It intercepts and validates transactions before any Razorpay order is ever created.
+### 1. ⚡ Adaptive Security Tiers (Express Lane vs. Deep Inspection)
+* **The Challenge**: Running heavy deep-inspection (semantic NLP overlap, geofencing, moving-average price drift) on every ₹40 milk or ₹200 meal creates unnecessary processing overhead and friction.
+* **How ACM Solves It**: Inspired by **Visa 3DS 2.0 and Stripe Radar**, ACM dynamically selects security tiers:
+  * **Express Highway (< 0.1ms)**: Routine, low-risk commodity orders from established agents sail through with lightweight sanity checks (active mandate + budget cap).
+  * **Deep Inspection Lane**: Automatically steps up to full 6-layer verification when an agent is new, purchasing high-liquidity tech/vouchers, or randomly selected by a **5% probabilistic spot-check** (TSA PreCheck model).
 
 ---
 
@@ -115,9 +121,9 @@ Every feature in Razorpay ACM is engineered to solve a critical vulnerability or
 
 ---
 
-### 9. 🤖 Machine-to-Machine Self-Correction (NLP Diagnostic Engine)
+### 9. 🤖 Cold-Path Gemini AI Analyst & Agent Interrogation
 * **The Challenge**: Traditional payment gateways return generic `400 Bad Request` or `403 Forbidden` errors, causing autonomous LLMs to crash, hallucinate invalid states, or retry endlessly.
-* **How ACM Solves It**: Decoupled from the payment hot-path, ACM's diagnostic engine analyzes failures and returns machine-actionable instructions with safe remediation payloads (e.g., suggested quantity reductions, exact excess amount in ₹, and realigned search parameters) so agents can automatically self-heal and proceed safely.
+* **How ACM Solves It**: Decoupled from the checkout hot-path, an isolated **Google Gemini Security Analyst** interrogates the buyer agent's self-explanation. It differentiates between innocent hallucinations (generating machine-actionable self-healing payloads to adjust quantities/SKUs) and malicious prompt injections (advising the gateway to auto-revoke the agent's credentials).
 
 ---
 

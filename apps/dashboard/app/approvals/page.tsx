@@ -20,6 +20,8 @@ import {
   Building2,
   TrendingUp,
   Sparkles,
+  Shield,
+  Zap,
 } from 'lucide-react';
 
 interface CartItem {
@@ -550,6 +552,8 @@ export default function ApprovalsPage() {
             const isActing = actionLoading[approval.id];
             const isDecided = !!approval.decision;
             const gateAudit = tx?.auditLogs?.find((l) => l.step === 'gate_decision' || l.step === 'policy_check');
+            const geminiAudit = tx?.auditLogs?.find((l) => l.actor === 'gemini_ai');
+            const isExpressLane = tx?.auditLogs?.some((l) => l.step === 'express_lane_clearance' || l.ruleId === 'express_highway');
             const totalInInr = quote ? quote.total / 100 : 0;
             const paymentLink = extractPaymentLink(approval, generatedPaymentLinks);
 
@@ -581,6 +585,17 @@ export default function ApprovalsPage() {
                           <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 border border-zinc-700/60 font-mono">
                             ID: {agent?.id || approval.transaction?.mandateId?.slice(0, 10) || 'agent'}
                           </span>
+                          {isExpressLane ? (
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center space-x-1">
+                              <Zap className="w-3 h-3 text-emerald-400" />
+                              <span>Express Highway (&lt; 0.1ms)</span>
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 flex items-center space-x-1">
+                              <Shield className="w-3 h-3 text-indigo-400" />
+                              <span>Deep Inspection Lane</span>
+                            </span>
+                          )}
                         </div>
                         <span className="text-[11px] text-zinc-500">
                           Initiated {new Date(approval.createdAt).toLocaleTimeString()} &bull; {new Date(approval.createdAt).toLocaleDateString()}
@@ -661,6 +676,24 @@ export default function ApprovalsPage() {
                       </div>
                     </div>
                   </div>
+
+                  {/* Google Gemini AI Security Assessment Banner */}
+                  {geminiAudit && (
+                    <div className="p-3.5 rounded-xl bg-gradient-to-r from-purple-950/40 via-zinc-900/90 to-zinc-900 border border-purple-500/30 space-y-1.5 text-xs text-purple-200">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-purple-300 flex items-center space-x-1.5">
+                          <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                          <span>Google Gemini AI Security Assessment</span>
+                        </span>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-900/60 text-purple-200 border border-purple-500/40">
+                          gemini-3.1-flash-lite
+                        </span>
+                      </div>
+                      <p className="text-zinc-300 leading-relaxed text-[11px] font-mono">
+                        {geminiAudit.reason}
+                      </p>
+                    </div>
+                  )}
 
                   {/* Payment Link Banner (if already generated or approved) */}
                   {paymentLink && (

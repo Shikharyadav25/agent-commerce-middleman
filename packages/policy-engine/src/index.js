@@ -3,3 +3,5 @@ export * from './evaluate.js';
 export * from './mandate.js';
 export * from './explain.js';
 export * from './diagnostics.js';
+export * from './gemini-analyst.js';
+export * from './adaptive.js';
