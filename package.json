@@ -33,7 +33,7 @@
     "payments"
   ],
   "author": "Shikharyadav25",
-  "license": "MIT",
+  "license": "UNLICENSED",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@prisma/client": "^6.19.3",

@@ -28,37 +28,39 @@
 
 ```mermaid
 flowchart TD
-    subgraph AgentClient ["Agent Layer"]
+    subgraph AgentClient ["1. Agent Layer"]
         Claude["Claude Desktop / AI Agent"]
-        MCP["ACM MCP Server<br>(apps/mcp-server)"]
+        MCP["ACM MCP Server<br>apps/mcp-server"]
     end
 
-    subgraph CoreBackend ["Gateway Backend (:3000)"]
+    subgraph CoreBackend ["2. Gateway Backend :3000"]
         API["Fastify API Layer"]
-        PolicyEngine["Deterministic Policy Engine<br>(packages/policy-engine)"]
-        DB[("PostgreSQL DB (:5433)<br>(packages/db)")]
+        PolicyEngine["Deterministic Policy Engine<br>packages/policy-engine"]
+        DB[("PostgreSQL DB :5433<br>packages/db")]
     end
 
-    subgraph PaymentsLayer ["Payments & Webhooks"]
-        RazorpayAPI["Razorpay API<br>(Orders & Payment Links)"]
-        Webhook["Webhook Listener<br>(/webhooks/razorpay)"]
+    subgraph PaymentsLayer ["3. Payments and Webhooks"]
+        RazorpayAPI["Razorpay API<br>Orders and Payment Links"]
+        Webhook["Webhook Listener<br>/webhooks/razorpay"]
         Ngrok["ngrok Public Tunnel"]
     end
 
-    subgraph OperatorUI ["Human-in-the-Loop (:3001)"]
-        Dashboard["Next.js Operator Dashboard<br>(apps/dashboard)"]
+    subgraph OperatorUI ["4. Human-in-the-Loop :3001"]
+        Dashboard["Next.js Operator Dashboard<br>apps/dashboard"]
     end
 
-    Claude -->|MCP Tools (stdio)| MCP
-    MCP -->|HTTP REST| API
-    API -->|Evaluate Mandate| PolicyEngine
-    PolicyEngine -->|Write Decisions & Logs| DB
-    PolicyEngine -->|Auto-Approved| RazorpayAPI
-    PolicyEngine -->|Gated / High Value| DB
-    DB -.->|Poll Pending Orders| Dashboard
-    Dashboard -->|Manual Human Approval| API
-    API -->|Create Order & Link| RazorpayAPI
-    RazorpayAPI -->|Signed Webhook| Ngrok --> Webhook --> DB
+    Claude -->|"MCP Tools (stdio)"| MCP
+    MCP -->|"HTTP REST"| API
+    API -->|"Evaluate Mandate"| PolicyEngine
+    PolicyEngine -->|"Write Decisions and Logs"| DB
+    PolicyEngine -->|"Auto-Approved"| RazorpayAPI
+    PolicyEngine -->|"Gated (High Value)"| DB
+    DB -.->|"Poll Pending Orders"| Dashboard
+    Dashboard -->|"Manual Human Approval"| API
+    API -->|"Create Order and Link"| RazorpayAPI
+    RazorpayAPI -->|"Signed Webhook"| Ngrok
+    Ngrok --> Webhook
+    Webhook --> DB
 ```
 
 ### Core Components & Roles
