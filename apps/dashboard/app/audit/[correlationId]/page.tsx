@@ -537,10 +537,12 @@ export default function AuditTimelinePage({
                   <div className="flex items-center space-x-2">
                     <Sparkles className="w-4 h-4 text-indigo-400" />
                     <span className="text-xs font-bold text-white uppercase tracking-wider">
-                      Google Gemini Security Analyst
+                      {displayReport.geminiReport.source?.includes('heuristic') || displayReport.geminiReport.model === 'deterministic-rules-engine'
+                        ? 'Zero-Trust AI Security Assessment (Deterministic Engine)'
+                        : 'Google Gemini Security Analyst'}
                     </span>
                     <span className="text-[10px] px-2 py-0.5 rounded-full font-mono bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                      {displayReport.geminiReport.model || 'gemini-1.5-flash'}
+                      {displayReport.geminiReport.model || (displayReport.geminiReport.source?.includes('heuristic') ? 'deterministic-rules-engine' : 'gemini-3.1-flash-lite')}
                     </span>
                   </div>
                   <div className="flex items-center space-x-2">

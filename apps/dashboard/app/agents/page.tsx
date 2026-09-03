@@ -45,6 +45,8 @@ interface AgentRecord {
     pendingApprovals: number;
     lastActiveAt: string;
     recentTransactions: any[];
+    trustScore?: number;
+    eligibleLane?: string;
   };
 }
 
@@ -583,6 +585,20 @@ export default function AgentsHubPage() {
                     <span className="text-[10px] text-zinc-500 uppercase font-medium block">Auto-Approve</span>
                     <span className="font-semibold text-emerald-400">
                       &le; ₹{((agent.stats?.autoApproveThresholdPaise || 50000) / 100).toLocaleString('en-IN')}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Metrics */}
+                <div className="mt-3.5 pt-3.5 border-t border-zinc-800/80 flex items-center justify-between text-xs">
+                  <div>
+                    <span className="text-zinc-500 block text-[11px]">Total Purchases</span>
+                    <span className="font-bold text-white">{agent.stats?.totalTransactions || 0} orders</span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-zinc-500 block text-[11px]">Lifetime Spend</span>
+                    <span className="font-bold text-purple-400">
+                      ₹{((agent.stats?.totalSpentPaise || 0) / 100).toLocaleString('en-IN')}
                     </span>
                   </div>
                 </div>

@@ -278,10 +278,29 @@ describe('ACM API Integration Test Suite', () => {
     assert.equal(payData.status, 'awaiting_human_approval');
     assert.ok(payData.transactionId);
 
-    // 3. Human Approval via /v1/pending-approvals/:id/decide
+    // 3a. Security Verification: Agent attempts self-approval without operator key -> MUST be rejected with 403
+    const unauthorizedSelfApprove = await app.inject({
+      method: 'POST',
+      url: `/v1/pending-approvals/${payData.transactionId}/decide`,
+      headers: {
+        'x-agent-id': testAgent.id,
+      },
+      payload: {
+        decision: 'approved',
+        decidedBy: 'agent:self',
+      },
+    });
+    assert.equal(unauthorizedSelfApprove.statusCode, 403);
+    const rejectData = JSON.parse(unauthorizedSelfApprove.payload);
+    assert.equal(rejectData.error, 'Operator authentication required');
+
+    // 3b. Genuine Operator Approval via /v1/pending-approvals/:id/decide with x-operator-key
     const decideRes = await app.inject({
       method: 'POST',
       url: `/v1/pending-approvals/${payData.transactionId}/decide`,
+      headers: {
+        'x-operator-key': 'acm_operator_secret_dev',
+      },
       payload: {
         decision: 'approved',
         decidedBy: 'human:supervisor',
@@ -441,10 +460,21 @@ describe('ACM API Integration Test Suite', () => {
       },
     });
 
-    // 2. Request refund
+    // 2a. Security check: Unauthorized third-party cannot refund transaction
+    const unauthRefund = await app.inject({
+      method: 'POST',
+      url: `/v1/transactions/${tx.id}/refund`,
+      payload: { reason: 'Unauthorized attacker refund' },
+    });
+    assert.equal(unauthRefund.statusCode, 403);
+
+    // 2b. Authorized refund by operator
     const refundRes = await app.inject({
       method: 'POST',
       url: `/v1/transactions/${tx.id}/refund`,
+      headers: {
+        'x-operator-key': 'acm_operator_secret_dev',
+      },
       payload: { reason: 'Customer cancelled delivery' },
     });
     assert.equal(refundRes.statusCode, 200);
@@ -633,6 +663,20 @@ describe('ACM API Integration Test Suite', () => {
     const data = JSON.parse(res.payload);
     assert.equal(data.success, true);
     assert.equal(data.finalTotal, 9000); // ₹90
+
+    // Security Verification (Finding 2.5): Compounding discount stacking is prevented
+    const secondDiscountRes = await app.inject({
+      method: 'POST',
+      url: '/v1/campaigns/apply',
+      payload: {
+        quoteId: quote.id,
+        discountPercent: 10,
+        campaignCode: 'SUMMER_STACK',
+      },
+    });
+    assert.equal(secondDiscountRes.statusCode, 400);
+    const secondData = JSON.parse(secondDiscountRes.payload);
+    assert.match(secondData.error, /already applied/i);
   });
 
   test('POST /v1/campaigns/apply rejects discount exceeding 20% policy cap', async () => {
@@ -817,5 +861,158 @@ describe('ACM API Integration Test Suite', () => {
     // Verify agent is immediately marked revoked in DB
     const updatedAgent = await prisma.agent.findUnique({ where: { id: probeAgent.id } });
     assert.equal(updatedAgent.revoked, true);
+  });
+
+  test('GET /v1/catalog: Returns W3C Schema.org JSON-LD DataFeed on content negotiation', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/catalog?format=json-ld',
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.headers['content-type'], 'application/ld+json; charset=utf-8');
+    const feed = JSON.parse(res.payload);
+    assert.equal(feed['@context'], 'https://schema.org');
+    assert.equal(feed['@type'], 'DataFeed');
+    assert.ok(Array.isArray(feed.dataFeedElement));
+    assert.ok(feed.dataFeedElement.length > 0);
+
+    const firstProduct = feed.dataFeedElement[0];
+    assert.equal(firstProduct['@type'], 'Product');
+    assert.ok(firstProduct.agentPurchasing);
+    assert.ok(firstProduct.offers);
+  });
+
+  test('POST /v1/checkout/sessions: Multi-turn conversational checkout session flow', async () => {
+    // 1. Initialize conversational session
+    const createRes = await app.inject({
+      method: 'POST',
+      url: '/v1/checkout/sessions',
+      payload: { agentId: testAgent.id, agentName: testAgent.name },
+    });
+    assert.equal(createRes.statusCode, 200);
+    const session = JSON.parse(createRes.payload);
+    assert.ok(session.id);
+    assert.equal(session.status, 'cart_building');
+
+    // 2. Add an item to cart incrementally
+    const addItemRes = await app.inject({
+      method: 'POST',
+      url: `/v1/checkout/sessions/${session.id}/items`,
+      payload: { sku: 'bread-white-test', qty: 2 },
+    });
+    assert.equal(addItemRes.statusCode, 200);
+    const itemData = JSON.parse(addItemRes.payload);
+    assert.equal(itemData.success, true);
+    assert.equal(itemData.session.items.length, 1);
+    assert.equal(itemData.session.totalPaise, 8000); // 2 * ₹40
+
+    // 3. Attach user intent and delivery pincode
+    const intentRes = await app.inject({
+      method: 'POST',
+      url: `/v1/checkout/sessions/${session.id}/intent`,
+      payload: {
+        userIntentPrompt: 'Buy 2 loaves of white bread for breakfast',
+        deliveryPincode: '560001',
+      },
+    });
+    assert.equal(intentRes.statusCode, 200);
+    const intentData = JSON.parse(intentRes.payload);
+    assert.equal(intentData.session.status, 'intent_attached');
+    assert.equal(intentData.session.deliveryPincode, '560001');
+
+    // 4. Complete checkout session atomically
+    const completeRes = await app.inject({
+      method: 'POST',
+      url: `/v1/checkout/sessions/${session.id}/complete`,
+    });
+    assert.equal(completeRes.statusCode, 200);
+    const completeData = JSON.parse(completeRes.payload);
+    assert.equal(completeData.success, true);
+    assert.ok(completeData.quoteId);
+    assert.ok(completeData.transactionId);
+  });
+
+  test('POST /v1/checkout/sessions: Rejects blacklisted items during cart building', async () => {
+    const createRes = await app.inject({
+      method: 'POST',
+      url: '/v1/checkout/sessions',
+    });
+    const session = JSON.parse(createRes.payload);
+
+    // Create a temporary blacklisted product
+    const merchant = await prisma.merchant.findFirst();
+    await prisma.product.upsert({
+      where: { merchantId_sku: { merchantId: merchant.id, sku: 'gift-card-500-session' } },
+      update: {},
+      create: {
+        merchantId: merchant.id,
+        sku: 'gift-card-500-session',
+        name: '₹500 Amazon Gift Voucher',
+        price: 50000,
+        stock: 10,
+        category: 'vouchers.giftcards',
+      },
+    });
+
+    const addRes = await app.inject({
+      method: 'POST',
+      url: `/v1/checkout/sessions/${session.id}/items`,
+      payload: { sku: 'gift-card-500-session', qty: 1 },
+    });
+    assert.equal(addRes.statusCode, 200);
+    const addData = JSON.parse(addRes.payload);
+    assert.equal(addData.blocked, true);
+    assert.ok(addData.reason.includes('restricted high-risk category'));
+  });
+
+  test('GET /v1/merchant/insights: Returns actionable growth diagnostics', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/merchant/insights',
+    });
+    assert.equal(res.statusCode, 200);
+    const data = JSON.parse(res.payload);
+    assert.ok(data.merchantId);
+    assert.ok(Array.isArray(data.insights));
+    assert.ok(data.summary);
+  });
+
+  test('GET & POST /v1/merchant/config: Tunes merchant risk appetite profile', async () => {
+    // 1. Read existing config
+    const getRes = await app.inject({
+      method: 'GET',
+      url: '/v1/merchant/config',
+    });
+    assert.equal(getRes.statusCode, 200);
+    const current = JSON.parse(getRes.payload);
+    assert.ok(current.merchantId);
+
+    // 2. Update to conservative risk profile
+    const updateRes = await app.inject({
+      method: 'POST',
+      url: '/v1/merchant/config',
+      payload: {
+        riskTolerance: 'conservative',
+        denyThreshold: 60,
+        reviewThreshold: 25,
+      },
+    });
+    assert.equal(updateRes.statusCode, 200);
+    const updated = JSON.parse(updateRes.payload);
+    assert.equal(updated.config.riskTolerance, 'conservative');
+    assert.equal(updated.config.denyThreshold, 60);
+  });
+
+  test('GET /v1/agents/:id/reputation: Computes portable cross-merchant trust credential', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/agents/${testAgent.id}/reputation`,
+    });
+    assert.equal(res.statusCode, 200);
+    const rep = JSON.parse(res.payload);
+    assert.equal(rep.agentId, testAgent.id);
+    assert.ok(typeof rep.networkTrustScore === 'number');
+    assert.ok(rep.portableTrustCredential);
+    assert.equal(rep.portableTrustCredential.standard, 'ACM-PortableReputation-v1');
   });
 });

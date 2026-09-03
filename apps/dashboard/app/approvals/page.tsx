@@ -127,6 +127,7 @@ export default function ApprovalsPage() {
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' | 'info'; linkUrl?: string } | null>(null);
   const [activePaymentModal, setActivePaymentModal] = useState<PaymentModalData | null>(null);
   const [generatedPaymentLinks, setGeneratedPaymentLinks] = useState<Record<string, string>>({});
+  const [isOfflineFallback, setIsOfflineFallback] = useState(false);
 
   const showNotification = (message: string, type: 'success' | 'error' | 'info' = 'info', linkUrl?: string) => {
     setNotification({ message, type, linkUrl });
@@ -161,10 +162,12 @@ export default function ApprovalsPage() {
 
       const data = await res.json();
       setApprovals(Array.isArray(data) ? data : []);
+      setIsOfflineFallback(false);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to fetch pending approvals';
       console.warn('Approvals fetch error:', message);
       setError(message);
+      setIsOfflineFallback(true);
 
       // If server is not responding during local standalone preview, use demo items
       if (approvals.length === 0) {
@@ -184,9 +187,13 @@ export default function ApprovalsPage() {
     setActionLoading((prev) => ({ ...prev, [id]: decision === 'approved' ? 'approving' : 'declining' }));
 
     try {
+      const operatorKey = process.env.NEXT_PUBLIC_ACM_OPERATOR_SECRET || 'acm_operator_secret_dev';
       const res = await fetch(`${API_BASE}/v1/pending-approvals/${id}/decide`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-operator-key': operatorKey,
+        },
         body: JSON.stringify({
           decision,
           decidedBy: 'human:admin',
@@ -512,7 +519,7 @@ export default function ApprovalsPage() {
       </div>
 
       {/* Error alert if any */}
-      {error && (
+      {(isOfflineFallback || error) && (
         <div className="p-4 rounded-xl bg-amber-950/30 border border-amber-500/30 flex items-start space-x-3 text-xs text-amber-300">
           <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
           <div className="flex-1">
@@ -585,17 +592,10 @@ export default function ApprovalsPage() {
                           <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 border border-zinc-700/60 font-mono">
                             ID: {agent?.id || approval.transaction?.mandateId?.slice(0, 10) || 'agent'}
                           </span>
-                          {isExpressLane ? (
-                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center space-x-1">
-                              <Zap className="w-3 h-3 text-emerald-400" />
-                              <span>Express Highway (&lt; 0.1ms)</span>
-                            </span>
-                          ) : (
-                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 flex items-center space-x-1">
-                              <Shield className="w-3 h-3 text-indigo-400" />
-                              <span>Deep Inspection Lane</span>
-                            </span>
-                          )}
+                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 flex items-center space-x-1">
+                            <Shield className="w-3 h-3 text-indigo-400" />
+                            <span>Deep Inspection Lane</span>
+                          </span>
                         </div>
                         <span className="text-[11px] text-zinc-500">
                           Initiated {new Date(approval.createdAt).toLocaleTimeString()} &bull; {new Date(approval.createdAt).toLocaleDateString()}
@@ -678,22 +678,39 @@ export default function ApprovalsPage() {
                   </div>
 
                   {/* Google Gemini AI Security Assessment Banner */}
-                  {geminiAudit && (
-                    <div className="p-3.5 rounded-xl bg-gradient-to-r from-purple-950/40 via-zinc-900/90 to-zinc-900 border border-purple-500/30 space-y-1.5 text-xs text-purple-200">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-purple-300 flex items-center space-x-1.5">
-                          <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                          <span>Google Gemini AI Security Assessment</span>
-                        </span>
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-900/60 text-purple-200 border border-purple-500/40">
-                          gemini-3.1-flash-lite
-                        </span>
+                  {geminiAudit && (() => {
+                    const isHeuristic =
+                      geminiAudit.ruleId?.includes('rules-engine') ||
+                      geminiAudit.reason?.includes('deterministic') ||
+                      geminiAudit.reason?.includes('Model: deterministic-rules-engine');
+                    const modelName = geminiAudit.ruleId?.startsWith('gemini-')
+                      ? geminiAudit.ruleId
+                      : isHeuristic
+                        ? 'deterministic-rules-engine'
+                        : (geminiAudit.ruleId && geminiAudit.ruleId !== 'gemini_security_audit' && geminiAudit.ruleId !== 'gemini_access_revocation')
+                          ? geminiAudit.ruleId
+                          : 'gemini-3.1-flash-lite';
+                    const bannerTitle = isHeuristic
+                      ? 'Deterministic AI Diagnostics & Heuristic Audit'
+                      : 'Google Gemini AI Security Assessment';
+
+                    return (
+                      <div className="p-3.5 rounded-xl bg-gradient-to-r from-purple-950/40 via-zinc-900/90 to-zinc-900 border border-purple-500/30 space-y-1.5 text-xs text-purple-200">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-purple-300 flex items-center space-x-1.5">
+                            <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                            <span>{bannerTitle}</span>
+                          </span>
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-900/60 text-purple-200 border border-purple-500/40">
+                            {modelName}
+                          </span>
+                        </div>
+                        <p className="text-zinc-300 leading-relaxed text-[11px] font-mono">
+                          {geminiAudit.reason}
+                        </p>
                       </div>
-                      <p className="text-zinc-300 leading-relaxed text-[11px] font-mono">
-                        {geminiAudit.reason}
-                      </p>
-                    </div>
-                  )}
+                    );
+                  })()}
 
                   {/* Payment Link Banner (if already generated or approved) */}
                   {paymentLink && (

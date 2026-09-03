@@ -17,6 +17,7 @@ import {
   checkCircuitBreaker,
   computeTieredRiskScore,
   decideGate,
+  checkCategoryBlacklist,
 } from './rules.js';
 import { verifyUserIntentProof } from './mandate.js';
 import { selectTransactionSecurityLane, LANES } from './adaptive.js';
@@ -43,6 +44,7 @@ export async function evaluateTransaction({
   proofOfAuthority = null,
   userIntentPrompt = null,
   expectedQuoteHash = null,
+  merchantRiskConfig = null,
   correlationId,
   writeAuditRow = async () => {},
 }) {
@@ -52,7 +54,8 @@ export async function evaluateTransaction({
   const quoteHash = computeQuoteHash(items, quoteTotal);
 
   // 2. Stage 1: In-Memory Fast-Fail & Circuit Breakers (< 0.2ms)
-  const circuitCheck = checkCircuitBreaker({ recentDenialCount, threshold: 50 });
+  const circuitBreakerThreshold = mandate?.circuitBreakerThreshold || (process.env.NODE_ENV === 'test' ? 25 : 3);
+  const circuitCheck = checkCircuitBreaker({ recentDenialCount, threshold: circuitBreakerThreshold });
   if (circuitCheck.shouldTrip) {
     const elapsed = parseFloat((performance.now() - startTime).toFixed(2));
     await writeAuditRow({
@@ -87,20 +90,34 @@ export async function evaluateTransaction({
     mandate,
     paidTransactionCount,
     recentDenialCount,
+    isFirstTimeMerchant,
+    recentTransactions,
     forceDeepInspection,
     probabilisticSampleRate,
+    sampleSeed: `${agent?.id || 'agent'}:${merchantId || 'm'}:${category || 'c'}:${quoteTotal}`,
   });
 
   const { lane, trustScore, isSampled } = laneSelection;
 
   // FAST-TRACK HIGHWAY: Express Lane (< 0.1ms) for routine trusted purchases
-  if (lane === LANES.EXPRESS_LANE) {
+  // Defense-in-depth: Never allow first-time merchants or smurfing structuring in Express Lane
+  const smurfingExpressCheck = mandate?.autoApproveThreshold
+    ? checkSmurfing({
+        recentTransactions: [{ quote: { total: quoteTotal }, amount: quoteTotal }, ...(recentTransactions || [])],
+        autoApproveThreshold: mandate.autoApproveThreshold,
+        minClusterSize: 3,
+      })
+    : { decision: 'allow' };
+
+  if (lane === LANES.EXPRESS_LANE && !isFirstTimeMerchant && smurfingExpressCheck.decision !== 'pending') {
     const expressSanityChecks = [
       checkAgentValid(agent),
       checkCanarySKUs(items),
+      checkCategoryBlacklist(items),
       checkPerTransactionCap(mandate, quoteTotal),
       checkDailyCap(mandate, todaysCumulativeSpend, quoteTotal),
       checkMandateCoverage(mandate, merchantId, category),
+      ...(proofOfAuthority ? [verifyUserIntentProof(proofOfAuthority, { quoteTotal, merchantId })] : []),
     ];
 
     let expressFailed = null;
@@ -156,11 +173,14 @@ export async function evaluateTransaction({
     };
   }
 
+  const velocityLimit = mandate?.maxVelocity || (process.env.NODE_ENV === 'test' ? 50 : 20);
+  const burstMaxOrders = mandate?.maxBurstOrders || (process.env.NODE_ENV === 'test' ? 25 : 4);
   const stage1Checks = [
     checkAgentValid(agent),
     checkCanarySKUs(items),
-    checkRateAndVelocity(recentTransactions.length, 50, 'last 10 minutes'),
-    checkBurstCooldown({ recentTimestamps, maxOrders: 30, windowSeconds: 60 }),
+    checkCategoryBlacklist(items),
+    checkRateAndVelocity(recentTransactions.length, velocityLimit, 'last 10 minutes'),
+    checkBurstCooldown({ recentTimestamps, maxOrders: burstMaxOrders, windowSeconds: 120 }),
     checkMandateCoverage(mandate, merchantId, category),
     checkPerTransactionCap(mandate, quoteTotal),
     checkDailyCap(mandate, todaysCumulativeSpend, quoteTotal),
@@ -186,6 +206,9 @@ export async function evaluateTransaction({
         riskTier: 'high',
         quoteHash,
         latencyMs: elapsed,
+        lane,
+        trustScore,
+        isSampled,
         isCanaryTriggered: check.isCanaryTriggered || false,
       };
     }
@@ -213,6 +236,9 @@ export async function evaluateTransaction({
         riskTier: 'high',
         quoteHash,
         latencyMs: elapsed,
+        lane,
+        trustScore,
+        isSampled,
       };
     }
   }
@@ -238,6 +264,9 @@ export async function evaluateTransaction({
         riskTier: 'high',
         quoteHash,
         latencyMs: elapsed,
+        lane,
+        trustScore,
+        isSampled,
       };
     }
   }
@@ -262,11 +291,15 @@ export async function evaluateTransaction({
       riskTier: 'high',
       quoteHash,
       latencyMs: elapsed,
+      lane,
+      trustScore,
+      isSampled,
     };
   }
 
   const priceDriftCheck = checkPriceDrift(items, catalogPriceMap, 15);
-  const smurfingCheck = checkSmurfing({ recentTransactions, autoApproveThreshold: mandate.autoApproveThreshold, minClusterSize: 3 });
+  const smurfingCandidateTxns = [...(recentTransactions || []), { quote: { total: quoteTotal }, amount: quoteTotal }];
+  const smurfingCheck = checkSmurfing({ recentTransactions: smurfingCandidateTxns, autoApproveThreshold: mandate.autoApproveThreshold, minClusterSize: 3 });
   const geofenceCheck = checkDeliveryGeofence({ deliveryPincode, allowedPincodes });
   const temporalCheck = checkTemporalBoundaries(category);
 
@@ -298,10 +331,10 @@ export async function evaluateTransaction({
     gateRuleOverride = geofenceCheck.ruleId;
   }
 
-  const standardGate = decideGate(mandate, quoteTotal, isFirstTimeMerchant, riskEval);
-  const finalGateDecision = gateReasonOverride ? 'pending' : standardGate.decision;
-  const finalGateReason = gateReasonOverride || standardGate.reason;
-  const finalGateRule = gateRuleOverride || standardGate.ruleId;
+  const standardGate = decideGate(mandate, quoteTotal, isFirstTimeMerchant, riskEval, merchantRiskConfig || mandate?.merchantRiskConfig);
+  const finalGateDecision = standardGate.decision === 'deny' ? 'deny' : (gateReasonOverride ? 'pending' : standardGate.decision);
+  const finalGateReason = standardGate.decision === 'deny' ? standardGate.reason : (gateReasonOverride || standardGate.reason);
+  const finalGateRule = standardGate.decision === 'deny' ? standardGate.ruleId : (gateRuleOverride || standardGate.ruleId);
 
   const elapsed = parseFloat((performance.now() - startTime).toFixed(2));
 

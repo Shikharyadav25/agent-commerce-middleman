@@ -9,6 +9,6 @@
     "./evaluate": "./src/evaluate.js"
   },
   "scripts": {
-    "test": "node --test src/rules.test.js"
+    "test": "node --test 'src/*.test.js'"
   }
 }

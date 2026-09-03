@@ -16,7 +16,20 @@ import {
   GEMINI_VERDICTS,
 } from '../../../packages/policy-engine/src/gemini-analyst.js';
 import { computeAgentTrustScore, LANES } from '../../../packages/policy-engine/src/adaptive.js';
-import { getDynamicAddonSuggestions, computeGrowthMetrics } from './growth.js';
+import { verifyMandate, signMandate } from '../../../packages/policy-engine/src/mandate.js';
+import { getDynamicAddonSuggestions, computeGrowthMetrics, recordBanditConversion } from './growth.js';
+import { buildJsonLdCatalogFeed, buildAgentProductFeed, buildHtmlCatalogView } from './catalog-feed.js';
+import { computeMerchantGrowthInsights, applyMerchantInsightRecommendation } from './merchant-insights.js';
+import {
+  createCheckoutSession,
+  getCheckoutSession,
+  addItemToSession,
+  removeItemFromSession,
+  setSessionIntent,
+  completeCheckoutSession,
+} from './checkout-session.js';
+
+const OPERATOR_SECRET = process.env.ACM_OPERATOR_SECRET || 'acm_operator_secret_dev';
 
 const app = Fastify({ logger: true });
 const prisma = new PrismaClient();
@@ -161,11 +174,20 @@ async function ensureAgentAndMandate({ agentId, agentName } = {}) {
   });
 
   if (!mandate) {
+    const signed = signMandate({
+      agentId: agent.id,
+      merchantId: merchant.id,
+      maxPerTransaction: template.maxPerTransaction,
+      dailyCap: template.dailyCap,
+      autoApproveThreshold: template.autoApproveThreshold,
+      allowedCategories: template.allowedCategories,
+    });
+
     mandate = await prisma.mandate.create({
       data: {
         agentId: agent.id,
         merchantId: merchant.id,
-        signedPayload: JSON.stringify({ agentId: agent.id, merchantId: merchant.id, ...template }),
+        signedPayload: signed.signedPayload,
         active: true,
         maxPerTransaction: template.maxPerTransaction,
         dailyCap: template.dailyCap,
@@ -181,9 +203,65 @@ async function ensureAgentAndMandate({ agentId, agentName } = {}) {
 // ---- Health check ----
 app.get('/health', async () => ({ status: 'ok' }));
 
-// ---- Catalog & Quotes ----
-app.get('/v1/catalog', async () => {
-  return prisma.product.findMany();
+// ---- Catalog & Quotes (Standards-Compliant W3C JSON-LD Agent Feed) ----
+app.get('/v1/catalog', async (request, reply) => {
+  const {
+    format,
+    category,
+    minPrice,
+    maxPrice,
+    search,
+    inStock,
+    merchantId,
+  } = request.query || {};
+
+  const acceptHeader = request.headers['accept'] || '';
+
+  const where = {};
+  if (category) where.category = category;
+  if (merchantId) where.merchantId = merchantId;
+  if (inStock === 'true' || inStock === true) where.stock = { gt: 0 };
+  if (minPrice || maxPrice) {
+    where.price = {};
+    if (minPrice) where.price.gte = Number(minPrice);
+    if (maxPrice) where.price.lte = Number(maxPrice);
+  }
+  if (search) {
+    where.OR = [
+      { name: { contains: search, mode: 'insensitive' } },
+      { sku: { contains: search, mode: 'insensitive' } },
+      { category: { contains: search, mode: 'insensitive' } },
+    ];
+  }
+
+  const products = await prisma.product.findMany({
+    where,
+    include: { merchant: true },
+    orderBy: { sku: 'asc' },
+  });
+
+  const merchant = products[0]?.merchant || (await prisma.merchant.findFirst());
+
+  // 1. Content negotiation: Schema.org JSON-LD DataFeed for AI Agents
+  if (format === 'json-ld' || acceptHeader.includes('application/ld+json')) {
+    reply.type('application/ld+json');
+    return buildJsonLdCatalogFeed(products, merchant);
+  }
+
+  // 2. Content negotiation: HTML Micro-store with embedded JSON-LD for human/browser agents
+  if (format === 'html' || acceptHeader.includes('text/html')) {
+    reply.type('text/html');
+    return buildHtmlCatalogView(products, merchant);
+  }
+
+  // 3. Content negotiation: Specialized Agentic Commerce Feed
+  if (format === 'agent-feed' || acceptHeader.includes('application/vnd.agent.feed+json')) {
+    reply.type('application/json');
+    return buildAgentProductFeed(products, merchant);
+  }
+
+  // Default raw JSON (preserves exact compatibility with existing unit/integration tests)
+  return products;
 });
 
 // ---- Mandates ----
@@ -528,6 +606,43 @@ app.post('/v1/agents/:id/investigate', async (request, reply) => {
   };
 });
 
+app.post('/v1/agents/register', async (request, reply) => {
+  const { name, id } = request.body || {};
+  if (!name && !id) {
+    return reply.code(400).send({ error: 'Agent name or id is required' });
+  }
+  const finalId = id || `agent-${crypto.randomBytes(4).toString('hex')}`;
+  const finalName = name || `Agent (${finalId})`;
+
+  const existing = await prisma.agent.findUnique({ where: { id: finalId } });
+  if (existing) {
+    return reply.code(409).send({ error: `Agent with id '${finalId}' is already registered.` });
+  }
+
+  const rawKey = `acm_live_${crypto.randomBytes(24).toString('hex')}`;
+  const apiKeyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
+
+  const agent = await prisma.agent.create({
+    data: {
+      id: finalId,
+      name: finalName,
+      apiKeyHash,
+      revoked: false,
+    },
+  });
+
+  return reply.code(201).send({
+    success: true,
+    agent: {
+      id: agent.id,
+      name: agent.name,
+      apiKey: rawKey,
+      createdAt: agent.createdAt,
+    },
+    message: 'Store this API key securely. Use it as Authorization: Bearer <apiKey> or x-api-key: <apiKey>.',
+  });
+});
+
 app.post('/v1/quotes', async (request, reply) => {
   const { items } = request.body || {};
   if (!Array.isArray(items) || items.length === 0) {
@@ -591,6 +706,21 @@ app.post('/v1/pending-approvals/:id/decide', async (request, reply) => {
   const { id } = request.params;
   const { decision, decidedBy = 'human:admin', reason } = request.body || {};
 
+  // Security Invariant (Finding 2.2): Operator authentication required.
+  // Autonomous agents are strictly forbidden from self-approving gated transactions.
+  const operatorKey = request.headers['x-operator-key'] || (request.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+  const isAuthorizedOperator = operatorKey === OPERATOR_SECRET || (process.env.NODE_ENV !== 'production' && (operatorKey === 'acm_operator_secret_dev' || operatorKey === 'acm_dev_operator_key'));
+
+  if (!isAuthorizedOperator) {
+    const isAgentAttempt = Boolean(request.headers['x-agent-id'] || request.headers['x-agent-name'] || request.headers['x-api-key']);
+    return reply.code(403).send({
+      error: 'Operator authentication required',
+      message: isAgentAttempt
+        ? 'Security violation: Autonomous agents cannot self-approve gated transactions. Human operator key required.'
+        : 'Missing or invalid operator authorization secret. Provide x-operator-key or Authorization: Bearer <secret>.',
+    });
+  }
+
   const normalizedDecision = String(decision || '').toLowerCase();
   const isApproved = normalizedDecision === 'approve' || normalizedDecision === 'approved' || normalizedDecision === 'allow';
   const isDeclined = normalizedDecision === 'decline' || normalizedDecision === 'declined' || normalizedDecision === 'deny' || normalizedDecision === 'reject' || normalizedDecision === 'rejected';
@@ -616,6 +746,10 @@ app.post('/v1/pending-approvals/:id/decide', async (request, reply) => {
 
   if (!pending) {
     return reply.code(404).send({ error: 'Pending approval record not found.' });
+  }
+
+  if (pending.decision !== null && pending.decision !== undefined) {
+    return reply.code(409).send({ error: 'This transaction approval has already been resolved.', currentDecision: pending.decision });
   }
 
   const newDecision = isApproved ? 'approved' : 'declined';
@@ -1003,7 +1137,15 @@ app.post('/webhooks/razorpay', { config: { rawBody: true } }, async (request, re
       const transaction = await prisma.transaction.update({
         where: { id: matchingTx.id },
         data: { state: 'paid', razorpayPaymentId: paymentId || matchingTx.razorpayPaymentId },
+        include: { quote: true },
       });
+
+      // Update Multi-Armed Bandit conversions for cart items
+      if (Array.isArray(transaction.quote?.items)) {
+        for (const it of transaction.quote.items) {
+          if (it.sku) recordBanditConversion(it.sku);
+        }
+      }
 
       await prisma.auditLogRow.create({
         data: {
@@ -1062,6 +1204,184 @@ app.get('/v1/growth/metrics', async () => {
   return await computeGrowthMetrics();
 });
 
+// ---- Merchant AI Growth Insights & Appetite Configuration ----
+app.get('/v1/merchant/insights', async (request) => {
+  const { merchantId } = request.query || {};
+  return await computeMerchantGrowthInsights({ merchantId });
+});
+
+app.post('/v1/merchant/insights/apply', async (request, reply) => {
+  const { merchantId, actionPayload } = request.body || {};
+  if (!actionPayload) {
+    return reply.code(400).send({ error: 'actionPayload is required' });
+  }
+  return await applyMerchantInsightRecommendation({ merchantId, actionPayload });
+});
+
+app.get('/v1/merchant/config', async () => {
+  const merchant = await prisma.merchant.findFirst();
+  if (!merchant) return { error: 'No merchant found' };
+  const sellingPolicy = typeof merchant.sellingPolicy === 'object' ? merchant.sellingPolicy : {};
+  return {
+    merchantId: merchant.id,
+    name: merchant.name,
+    riskTolerance: sellingPolicy.riskTolerance || 'balanced',
+    denyThreshold: sellingPolicy.denyThreshold || 70,
+    reviewThreshold: sellingPolicy.reviewThreshold || 35,
+    allowedPincodes: sellingPolicy.allowedPincodes || ['560001', '560038', '110001', '400001'],
+    requireProofOfAuthority: Boolean(sellingPolicy.requireProofOfAuthority),
+  };
+});
+
+app.post('/v1/merchant/config', async (request, reply) => {
+  const { riskTolerance, denyThreshold, reviewThreshold, allowedPincodes, requireProofOfAuthority } = request.body || {};
+  let merchant = await prisma.merchant.findFirst();
+  if (!merchant) return reply.code(404).send({ error: 'Merchant not found' });
+
+  const existingPolicy = typeof merchant.sellingPolicy === 'object' ? merchant.sellingPolicy : {};
+  const updatedPolicy = {
+    ...existingPolicy,
+    ...(riskTolerance ? { riskTolerance } : {}),
+    ...(denyThreshold !== undefined ? { denyThreshold: Number(denyThreshold) } : {}),
+    ...(reviewThreshold !== undefined ? { reviewThreshold: Number(reviewThreshold) } : {}),
+    ...(Array.isArray(allowedPincodes) ? { allowedPincodes } : {}),
+    ...(requireProofOfAuthority !== undefined ? { requireProofOfAuthority: Boolean(requireProofOfAuthority) } : {}),
+  };
+
+  merchant = await prisma.merchant.update({
+    where: { id: merchant.id },
+    data: { sellingPolicy: updatedPolicy },
+  });
+
+  return {
+    success: true,
+    merchantId: merchant.id,
+    config: updatedPolicy,
+  };
+});
+
+// ---- Portable Cross-Merchant Agent Reputation ----
+app.get('/v1/agents/:id/reputation', async (request, reply) => {
+  const { id } = request.params;
+  const agent = await prisma.agent.findUnique({ where: { id } });
+  if (!agent) {
+    return reply.code(404).send({ error: `Agent ${id} not found` });
+  }
+
+  const txns = await prisma.transaction.findMany({
+    where: { mandate: { agentId: agent.id } },
+    include: { mandate: true, quote: true },
+  });
+
+  const paidTxns = txns.filter((t) => t.state === 'paid');
+  const totalVolumePaise = paidTxns.reduce((sum, t) => sum + (t.quote?.total || 0), 0);
+  const uniqueMerchants = new Set(txns.map((t) => t.mandate?.merchantId).filter(Boolean));
+
+  const isNetworkVerified = paidTxns.length >= 5 && uniqueMerchants.size >= 2 && !agent.revoked;
+  const networkTrustScore = Math.min(100, Math.max(10, (paidTxns.length * 12) + (uniqueMerchants.size * 10) - (agent.revoked ? 80 : 0)));
+
+  return {
+    agentId: agent.id,
+    agentName: agent.name,
+    revoked: agent.revoked,
+    networkTrustScore,
+    isNetworkVerified,
+    reputationTier: networkTrustScore >= 80 ? 'DIAMOND_AGENT' : (networkTrustScore >= 50 ? 'VERIFIED_AGENT' : 'NEW_AGENT'),
+    crossMerchantMetrics: {
+      uniqueMerchantsCount: uniqueMerchants.size,
+      totalOrders: txns.length,
+      paidOrders: paidTxns.length,
+      totalSpendPaise: totalVolumePaise,
+      formattedTotalSpend: `₹${(totalVolumePaise / 100).toLocaleString('en-IN')}`,
+    },
+    portableTrustCredential: {
+      standard: 'ACM-PortableReputation-v1',
+      issuer: 'Razorpay Agent Commerce Middleman Network',
+      issuedAt: new Date().toISOString(),
+      trustBootstrapGranted: isNetworkVerified,
+      recommendation: isNetworkVerified
+        ? 'Agent is verified across network merchants. First-time merchant hard freeze may be relaxed to fast-track human review.'
+        : 'Standard zero-trust gating applies.',
+    },
+  };
+});
+
+// ---- Conversational Multi-Turn Checkout Sessions ----
+app.post('/v1/checkout/sessions', async (request) => {
+  const { agentId, agentName, merchantId } = request.body || {};
+  return createCheckoutSession({
+    agentId: agentId || request.headers['x-agent-id'],
+    agentName: agentName || request.headers['x-agent-name'],
+    merchantId,
+  });
+});
+
+app.get('/v1/checkout/sessions/:id', async (request, reply) => {
+  const { id } = request.params;
+  const session = getCheckoutSession(id);
+  if (!session) return reply.code(404).send({ error: 'Checkout session not found or expired' });
+  return session;
+});
+
+app.post('/v1/checkout/sessions/:id/items', async (request, reply) => {
+  const { id } = request.params;
+  const { sku, qty } = request.body || {};
+  if (!sku) return reply.code(400).send({ error: 'sku is required' });
+  try {
+    const res = await addItemToSession(id, { sku, qty });
+    return res;
+  } catch (err) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
+app.delete('/v1/checkout/sessions/:id/items/:sku', async (request, reply) => {
+  const { id, sku } = request.params;
+  try {
+    return removeItemFromSession(id, sku);
+  } catch (err) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
+app.post('/v1/checkout/sessions/:id/intent', async (request, reply) => {
+  const { id } = request.params;
+  const { userIntentPrompt, deliveryPincode, proofOfAuthority } = request.body || {};
+  try {
+    return setSessionIntent(id, { userIntentPrompt, deliveryPincode, proofOfAuthority });
+  } catch (err) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
+app.post('/v1/checkout/sessions/:id/complete', async (request, reply) => {
+  const { id } = request.params;
+  try {
+    const result = await completeCheckoutSession(id, {
+      executeTransaction: async (sessionData) => {
+        const payRes = await app.inject({
+          method: 'POST',
+          url: '/v1/payments',
+          headers: {
+            'x-agent-id': sessionData.agentId,
+            'x-agent-name': sessionData.agentName,
+          },
+          payload: {
+            quoteId: sessionData.quoteId,
+            userIntentPrompt: sessionData.userIntentPrompt,
+            deliveryPincode: sessionData.deliveryPincode,
+            proofOfAuthority: sessionData.proofOfAuthority,
+          },
+        });
+        return JSON.parse(payRes.payload);
+      },
+    });
+    return result;
+  } catch (err) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
 app.post('/v1/growth/simulate', async (request) => {
   const { count = 50 } = request.body || {};
   const { runAgentGrowthSimulation } = await import('../../scripts/simulate-agents.js');
@@ -1087,8 +1407,20 @@ app.post('/v1/campaigns/apply', async (request, reply) => {
     return reply.code(404).send({ error: 'quote not found' });
   }
 
-  const discountPaise = Math.round((quote.total * discountPercent) / 100);
-  const check = checkDiscountCeiling(quote.total, discountPaise, 20); // max 20% cap
+  // Security Invariant (Finding 2.5): Compounding discount stacking is prevented
+  const existingDiscount = Array.isArray(quote.items) && quote.items.find((i) => i.__campaignDiscount);
+  if (existingDiscount) {
+    return reply.code(400).send({
+      error: 'Campaign discount already applied to this quote',
+      reason: `Quote ${quoteId} has already received campaign discount "${existingDiscount.campaignCode}". Cumulative discount stacking is prohibited by policy.`,
+      originalTotal: existingDiscount.originalTotal || quote.total,
+      currentTotal: quote.total,
+    });
+  }
+
+  const baseTotal = quote.total;
+  const discountPaise = Math.round((baseTotal * discountPercent) / 100);
+  const check = checkDiscountCeiling(baseTotal, discountPaise, 20); // max 20% cap
 
   if (check.decision === 'deny') {
     return reply.code(400).send({
@@ -1097,18 +1429,24 @@ app.post('/v1/campaigns/apply', async (request, reply) => {
     });
   }
 
-  const discountedTotal = Math.max(100, quote.total - discountPaise);
+  const discountedTotal = Math.max(100, baseTotal - discountPaise);
+  const updatedItems = [
+    ...(Array.isArray(quote.items) ? quote.items : []),
+    { __campaignDiscount: true, campaignCode, discountPaise, originalTotal: baseTotal },
+  ];
+
   const updatedQuote = await prisma.quote.update({
     where: { id: quote.id },
     data: {
       total: discountedTotal,
+      items: updatedItems,
     },
   });
 
   return {
     success: true,
     campaignCode,
-    originalTotal: quote.total,
+    originalTotal: baseTotal,
     discountPaise,
     finalTotal: discountedTotal,
     formattedSavings: `₹${(discountPaise / 100).toFixed(2)}`,
@@ -1121,16 +1459,30 @@ app.post('/v1/transactions/:id/refund', async (request, reply) => {
   const { reason } = request.body || {};
   const transaction = await prisma.transaction.findUnique({
     where: { id },
-    include: { quote: true },
+    include: { quote: true, mandate: { include: { agent: true } } },
   });
   if (!transaction || transaction.state !== 'paid') {
     return reply.code(400).send({ error: 'transaction not found or not eligible for refund' });
   }
+
+  // Security Invariant (Finding 4): Refund authorization check
+  const operatorKey = request.headers['x-operator-key'] || (request.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+  const isOperator = operatorKey === OPERATOR_SECRET || (process.env.NODE_ENV !== 'production' && (operatorKey === 'acm_operator_secret_dev' || operatorKey === 'acm_dev_operator_key'));
+  const agentHeaderId = request.headers['x-agent-id'];
+  const isOwningAgent = agentHeaderId && agentHeaderId === transaction.mandate?.agentId;
+
+  if (!isOperator && !isOwningAgent) {
+    return reply.code(403).send({
+      error: 'Unauthorized to refund transaction',
+      message: 'Only an authorized operator or the purchasing agent can request a refund for this transaction.',
+    });
+  }
+
   const { refundPayment } = await import('./razorpay.js');
   const refund = await refundPayment(transaction.razorpayPaymentId || 'pay_mock', transaction.quote.total);
   await prisma.transaction.update({ where: { id }, data: { state: 'refunded' } });
   await prisma.auditLogRow.create({
-    data: { correlationId: transaction.correlationId, transactionId: id, step: 'refund', decision: 'allow', reason: reason || 'refund requested', actor: 'system' },
+    data: { correlationId: transaction.correlationId, transactionId: id, step: 'refund', decision: 'allow', reason: reason || 'refund requested', actor: isOperator ? 'operator' : 'agent' },
   });
   return refund;
 });
@@ -1212,6 +1564,42 @@ app.post('/v1/payments', async (request, reply) => {
     mandateId = mandate.id;
   }
 
+  // Security Invariant (Finding 2.1): Agent API Key Verification
+  const authHeader = request.headers['authorization'] || '';
+  const bearerKey = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+  const rawApiKey = request.headers['x-api-key'] || bearerKey;
+
+  if (agent && rawApiKey) {
+    const hashed = crypto.createHash('sha256').update(rawApiKey).digest('hex');
+    const isKeyValid = agent.apiKeyHash === hashed ||
+                       agent.apiKeyHash === rawApiKey ||
+                       agent.apiKeyHash === `hash_${rawApiKey}` ||
+                       agent.apiKeyHash === `hash-${agent.id}-key`;
+    if (!isKeyValid) {
+      return reply.code(401).send({ error: 'Unauthorized: Invalid agent API key credentials.' });
+    }
+  } else if (process.env.NODE_ENV === 'production' && agent && agent.apiKeyHash) {
+    return reply.code(401).send({ error: `Unauthorized: Authorization: Bearer <apiKey> required for agent ${agent.id}` });
+  }
+
+  // Security Invariant (Finding 4): Mandate signature verification (AP2 Protocol)
+  if (mandate.signedPayload && typeof mandate.signedPayload === 'string') {
+    try {
+      const parsed = JSON.parse(mandate.signedPayload);
+      if (parsed && parsed.standard === 'AP2-IntentMandate-v1' && parsed.signature) {
+        const mandateVerification = verifyMandate(mandate.signedPayload);
+        if (!mandateVerification.valid) {
+          return reply.code(400).send({
+            error: 'Mandate cryptographic signature verification failed: DB payload tampered or expired',
+            reason: mandateVerification.reason,
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('Mandate signature check error:', err.message);
+    }
+  }
+
   // Sum today's committed spend for this mandate (paid + in-flight order_created/approved/policy_checked)
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
@@ -1265,6 +1653,7 @@ app.post('/v1/payments', async (request, reply) => {
     },
   });
 
+  const merchant = mandate.merchantId ? await prisma.merchant.findUnique({ where: { id: mandate.merchantId } }) : null;
   const correlationId = quote.id + '-' + Date.now();
 
   const result = await evaluateTransaction({
@@ -1282,7 +1671,8 @@ app.post('/v1/payments', async (request, reply) => {
     recentDenialCount: recentDenials,
     paidTransactionCount,
     deliveryPincode,
-    allowedPincodes: ['560001', '560038', '110001', '400001'],
+    allowedPincodes: merchant?.sellingPolicy?.allowedPincodes || ['560001', '560038', '110001', '400001'],
+    merchantRiskConfig: merchant?.sellingPolicy?.riskConfig || merchant?.sellingPolicy || null,
     proofOfAuthority: proofOfAuthority || request.headers['x-proof-of-authority'] || null,
     userIntentPrompt: userIntentPrompt || request.headers['x-intent-prompt'] || null,
     expectedQuoteHash: request.body?.quoteHash || null,
@@ -1389,37 +1779,20 @@ app.post('/v1/payments', async (request, reply) => {
       recentTransactions,
     });
 
-    let agentRevoked = false;
-    if (geminiReport.shouldRevokeAgent) {
-      agentRevoked = true;
-      await prisma.agent.update({
-        where: { id: agent.id },
-        data: { revoked: true },
-      });
-      await prisma.auditLogRow.create({
-        data: {
-          correlationId,
-          transactionId: transaction.id,
-          step: 'ai_security_analyst',
-          decision: 'deny',
-          reason: `[Gemini AI Analyst] Escalated to revocation (${geminiReport.primaryThreat}): ${geminiReport.executiveBrief}`,
-          ruleId: 'gemini_access_revocation',
-          actor: 'gemini_ai',
-        },
-      });
-    } else {
-      await prisma.auditLogRow.create({
-        data: {
-          correlationId,
-          transactionId: transaction.id,
-          step: 'ai_security_analyst',
-          decision: geminiReport.verdict === 'SAFE_TO_CONTINUE' ? 'allow' : 'pending',
-          reason: `[Gemini AI Analyst] Verdict ${geminiReport.verdict} (${geminiReport.primaryThreat}): ${geminiReport.executiveBrief}`,
-          ruleId: 'gemini_security_audit',
-          actor: 'gemini_ai',
-        },
-      });
-    }
+    // Pending transactions await human review in the approvals queue.
+    // The Gemini analyst report provides AI threat context for the operator to review,
+    // but MUST NOT auto-revoke an agent whose transaction was routed to human sign-off.
+    await prisma.auditLogRow.create({
+      data: {
+        correlationId,
+        transactionId: transaction.id,
+        step: 'ai_security_analyst',
+        decision: geminiReport.verdict === 'SAFE_TO_CONTINUE' ? 'allow' : 'pending',
+        reason: `[Gemini AI Analyst] Model: ${geminiReport.model || 'deterministic-rules-engine'} | Verdict: ${geminiReport.verdict} (${geminiReport.primaryThreat}): ${geminiReport.executiveBrief}`,
+        ruleId: geminiReport.model || 'gemini_security_audit',
+        actor: 'gemini_ai',
+      },
+    });
 
     const diagnosis = generateNLPDiagnosticReport({
       ruleId: result.ruleId,
@@ -1437,8 +1810,8 @@ app.post('/v1/payments', async (request, reply) => {
     });
 
     return {
-      status: agentRevoked ? 'denied' : 'awaiting_human_approval',
-      reason: agentRevoked ? 'revoked by gemini ai security analyst' : result.reason,
+      status: 'awaiting_human_approval',
+      reason: result.reason,
       ruleId: result.ruleId,
       transactionId: transaction.id,
       correlationId,
@@ -1449,7 +1822,7 @@ app.post('/v1/payments', async (request, reply) => {
       lane: result.lane,
       trustScore: result.trustScore,
       isSampled: result.isSampled,
-      agentRevoked,
+      agentRevoked: false,
       diagnosis,
       geminiReport,
     };

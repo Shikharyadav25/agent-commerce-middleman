@@ -10,12 +10,14 @@ const server = new McpServer({
 const API_BASE = process.env.ACM_API_URL || 'http://localhost:3000';
 const AGENT_NAME = process.env.ACM_AGENT_NAME || process.env.AGENT_NAME || 'Claude Desktop';
 const AGENT_ID = process.env.ACM_AGENT_ID || process.env.AGENT_ID || AGENT_NAME.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+const AGENT_API_KEY = process.env.ACM_AGENT_API_KEY || process.env.AGENT_API_KEY || null;
 
 async function safeFetch(url, options = {}) {
   try {
     const defaultHeaders = {
       'x-agent-id': AGENT_ID,
       'x-agent-name': AGENT_NAME,
+      ...(AGENT_API_KEY ? { 'authorization': `Bearer ${AGENT_API_KEY}`, 'x-api-key': AGENT_API_KEY } : {}),
     };
     const res = await fetch(url, {
       ...options,
@@ -58,12 +60,15 @@ server.tool(
       const catalog = await catRes.json();
       const q = query.toLowerCase().trim();
 
-      const item = catalog.find((p) =>
-        p.sku.toLowerCase().includes(q) ||
-        p.name.toLowerCase().includes(q) ||
-        q.includes(p.name.toLowerCase().split(',')[0]) ||
-        q.includes(p.sku.split('-')[0])
-      );
+      const item = catalog.find((p) => {
+        const skuLower = p.sku.toLowerCase();
+        const nameLower = p.name.toLowerCase();
+        if (skuLower === q || nameLower === q) return true;
+        if (skuLower.includes(q) || nameLower.includes(q)) return true;
+        const words = q.split(/\s+/).filter((w) => w.length > 2);
+        if (words.length > 0 && words.every((w) => nameLower.includes(w) || skuLower.includes(w))) return true;
+        return false;
+      });
 
       if (!item) {
         return {

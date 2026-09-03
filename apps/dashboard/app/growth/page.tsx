@@ -28,10 +28,51 @@ interface GrowthMetrics {
   formattedBaselineAov: string;
   crossSellAovPaise: number;
   formattedCrossSellAov: string;
-  aovLiftPct: number;
+  aovLiftPct: number | null;
+  hasSufficientData?: boolean;
   singleItemOrdersCount: number;
   multiItemOrdersCount: number;
   multiItemAdoptionRatePct: number;
+  bandit?: BanditMetrics;
+}
+
+interface BanditArm {
+  sku: string;
+  impressions: number;
+  conversions: number;
+  winRatePct: number;
+  expectedReward: number;
+}
+
+interface BanditMetrics {
+  totalTrials: number;
+  totalConversions: number;
+  globalConversionRatePct: number;
+  explorationRatioPct: number;
+  algorithm: string;
+  arms: BanditArm[];
+}
+
+interface MerchantConfig {
+  merchantId: string;
+  name: string;
+  riskTolerance: 'conservative' | 'balanced' | 'aggressive' | 'custom';
+  denyThreshold: number;
+  reviewThreshold: number;
+  allowedPincodes: string[];
+}
+
+interface MerchantInsight {
+  id: string;
+  type: string;
+  severity: 'high' | 'medium' | 'info' | 'warning';
+  title: string;
+  summary: string;
+  metric: string;
+  formattedPotentialGain: string;
+  recommendedAction: string;
+  actionable: boolean;
+  actionPayload?: any;
 }
 
 interface SimResult {
@@ -69,6 +110,11 @@ export default function GrowthPage() {
   const [simulating, setSimulating] = useState(false);
   const [simResult, setSimResult] = useState<SimResult | null>(null);
   const [activeTab, setActiveTab] = useState<'overview' | 'matrix' | 'campaigns'>('overview');
+  const [merchantConfig, setMerchantConfig] = useState<MerchantConfig | null>(null);
+  const [insights, setInsights] = useState<MerchantInsight[]>([]);
+  const [insightsSummary, setInsightsSummary] = useState<any>(null);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<Record<string, boolean>>({});
 
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
@@ -86,9 +132,65 @@ export default function GrowthPage() {
     }
   };
 
+  const fetchMerchantData = async () => {
+    try {
+      const [configRes, insightsRes] = await Promise.all([
+        fetch(`${API_BASE}/v1/merchant/config`),
+        fetch(`${API_BASE}/v1/merchant/insights`),
+      ]);
+      if (configRes.ok) {
+        const configData = await configRes.json();
+        setMerchantConfig(configData);
+      }
+      if (insightsRes.ok) {
+        const insightsData = await insightsRes.json();
+        setInsights(insightsData.insights || []);
+        setInsightsSummary(insightsData.summary || null);
+      }
+    } catch (err) {
+      console.warn('Failed to load merchant insights:', err);
+    }
+  };
+
   useEffect(() => {
     fetchMetrics();
+    fetchMerchantData();
   }, []);
+
+  const handleUpdateRiskTolerance = async (tolerance: 'conservative' | 'balanced' | 'aggressive') => {
+    try {
+      const res = await fetch(`${API_BASE}/v1/merchant/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ riskTolerance: tolerance }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setMerchantConfig(data.config);
+      }
+    } catch (err) {
+      console.error('Failed to update risk config:', err);
+    }
+  };
+
+  const handleApplyOptimization = async (insightId: string, actionPayload: any) => {
+    setActionLoading(insightId);
+    try {
+      const res = await fetch(`${API_BASE}/v1/merchant/insights/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actionPayload }),
+      });
+      if (res.ok) {
+        setActionSuccess((prev) => ({ ...prev, [insightId]: true }));
+        await fetchMerchantData();
+      }
+    } catch (err) {
+      console.error('Failed to apply optimization:', err);
+    } finally {
+      setActionLoading(null);
+    }
+  };
 
   const handleRunSimulation = async () => {
     setSimulating(true);
@@ -161,12 +263,18 @@ export default function GrowthPage() {
             </div>
             <div className="mt-3 flex items-baseline space-x-2">
               <span className="text-3xl font-black text-white">
-                +{metrics ? metrics.aovLiftPct : '28.4'}%
+                {metrics?.hasSufficientData && typeof metrics?.aovLiftPct === 'number'
+                  ? `+${metrics.aovLiftPct}%`
+                  : 'Collecting Data'}
               </span>
-              <span className="text-xs text-emerald-400 font-medium">Revenue Delta</span>
+              <span className="text-xs text-emerald-400 font-medium">
+                {metrics?.hasSufficientData ? 'Revenue Delta' : 'Need multi-item orders'}
+              </span>
             </div>
             <p className="text-[11px] text-zinc-400 mt-2">
-              Cross-sell baskets vs. single-item baseline across autonomous AI buyers
+              {metrics?.hasSufficientData
+                ? 'Cross-sell baskets vs. single-item baseline across autonomous AI buyers'
+                : 'Insufficient multi-item basket orders recorded to compute statistical AOV lift.'}
             </p>
           </div>
 
@@ -387,6 +495,153 @@ export default function GrowthPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+
+        {/* Multi-Armed Bandit (MAB) Reinforcement Engine */}
+        <div className="rounded-2xl p-6 sm:p-8 bg-zinc-900/90 border border-zinc-800 shadow-xl space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center space-x-2">
+                <Sparkles className="w-5 h-5 text-amber-400" />
+                <h2 className="text-lg font-bold text-white">Multi-Armed Bandit (MAB) Reinforcement Engine</h2>
+              </div>
+              <p className="text-xs text-zinc-400 mt-1">
+                Thompson-Sampling Bayesian bandit balancing active exploration (15%) with conversion exploitation (85%) in real time.
+              </p>
+            </div>
+            <div className="flex items-center space-x-2 text-xs">
+              <span className="px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/20 font-mono">
+                {metrics?.bandit?.algorithm || 'Thompson-Sampling MAB'}
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="p-4 rounded-xl bg-zinc-950/60 border border-zinc-800">
+              <div className="text-xs text-zinc-400 font-medium">Total Bandit Trials</div>
+              <div className="text-2xl font-black text-white mt-1">
+                {metrics?.bandit?.totalTrials || 0}
+              </div>
+              <p className="text-[11px] text-zinc-500 mt-1">Surfaced recommendation impressions</p>
+            </div>
+            <div className="p-4 rounded-xl bg-zinc-950/60 border border-zinc-800">
+              <div className="text-xs text-zinc-400 font-medium">Paid Conversions</div>
+              <div className="text-2xl font-black text-emerald-400 mt-1">
+                {metrics?.bandit?.totalConversions || 0}
+              </div>
+              <p className="text-[11px] text-zinc-500 mt-1">Add-on converted & paid orders</p>
+            </div>
+            <div className="p-4 rounded-xl bg-zinc-950/60 border border-zinc-800">
+              <div className="text-xs text-zinc-400 font-medium">Exploration / Exploitation</div>
+              <div className="text-2xl font-black text-blue-400 mt-1">
+                15% / 85%
+              </div>
+              <p className="text-[11px] text-zinc-500 mt-1">Continuous Bayesian adaptation</p>
+            </div>
+          </div>
+
+          {metrics?.bandit?.arms && metrics.bandit.arms.length > 0 && (
+            <div className="space-y-2">
+              <h3 className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">Top Bandit Arms by Expected Reward</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {metrics.bandit.arms.slice(0, 4).map((arm) => (
+                  <div key={arm.sku} className="p-3.5 rounded-xl bg-zinc-950/50 border border-zinc-800/80 flex items-center justify-between">
+                    <div>
+                      <div className="text-xs font-bold text-white font-mono">{arm.sku}</div>
+                      <div className="text-[11px] text-zinc-400">
+                        {arm.conversions} wins / {arm.impressions} trials
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm font-black text-emerald-400">{arm.winRatePct}%</div>
+                      <div className="text-[10px] text-zinc-500 font-mono">μ={arm.expectedReward}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Merchant AI Growth Insights & Appetite Control */}
+        <div className="rounded-2xl p-6 sm:p-8 bg-zinc-900/90 border border-zinc-800 shadow-xl space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-800 pb-5">
+            <div>
+              <div className="flex items-center space-x-2">
+                <Zap className="w-5 h-5 text-indigo-400" />
+                <h2 className="text-lg font-bold text-white">Merchant AI Growth Insights & Policy Controls</h2>
+              </div>
+              <p className="text-xs text-zinc-400 mt-1">
+                Actionable diagnostics generated from autonomous AI buyer activity to recover lost merchant revenue.
+              </p>
+            </div>
+
+            {/* Merchant Risk Tolerance Selector */}
+            <div className="flex items-center space-x-1.5 p-1 bg-zinc-950 rounded-xl border border-zinc-800">
+              <span className="text-[10px] uppercase font-bold text-zinc-500 px-2">Risk Appetite:</span>
+              {(['conservative', 'balanced', 'aggressive'] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => handleUpdateRiskTolerance(t)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium capitalize transition-all cursor-pointer ${
+                    merchantConfig?.riskTolerance === t
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {insights.map((insight) => (
+              <div
+                key={insight.id}
+                className="p-4 rounded-xl bg-zinc-950/70 border border-zinc-800/80 hover:border-zinc-700 transition-all space-y-3"
+              >
+                <div className="flex items-start justify-between">
+                  <div className="space-y-0.5">
+                    <span
+                      className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${
+                        insight.severity === 'high'
+                          ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                          : insight.severity === 'medium'
+                          ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                          : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                      }`}
+                    >
+                      {insight.type.replace(/_/g, ' ')}
+                    </span>
+                    <h4 className="text-sm font-bold text-white mt-1.5">{insight.title}</h4>
+                  </div>
+                  <span className="text-xs font-mono font-bold text-emerald-400 shrink-0">
+                    {insight.formattedPotentialGain}
+                  </span>
+                </div>
+
+                <p className="text-xs text-zinc-400 leading-relaxed">{insight.summary}</p>
+
+                <div className="pt-2 border-t border-zinc-800/60 flex items-center justify-between">
+                  <span className="text-[11px] text-zinc-500 font-mono">{insight.metric}</span>
+                  {insight.actionable && insight.actionPayload && (
+                    <button
+                      onClick={() => handleApplyOptimization(insight.id, insight.actionPayload)}
+                      disabled={actionLoading === insight.id || actionSuccess[insight.id]}
+                      className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
+                    >
+                      {actionSuccess[insight.id]
+                        ? 'Applied ✓'
+                        : actionLoading === insight.id
+                        ? 'Applying...'
+                        : 'Apply Optimization'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
     </div>

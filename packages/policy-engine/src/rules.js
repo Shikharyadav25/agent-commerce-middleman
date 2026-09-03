@@ -47,23 +47,48 @@ export function checkDailyCap(mandate, todaysCumulativeSpend, quoteTotal) {
  * =========================================================================
  */
 
-const HIGH_RISK_CATEGORIES = ['vouchers.giftcards', 'crypto.currency', 'prepaid.cards', 'luxury.jewelry', 'gambling'];
+export const HIGH_RISK_CATEGORIES = ['vouchers.giftcards', 'crypto.currency', 'prepaid.cards', 'luxury.jewelry', 'gambling'];
+
+/**
+ * Strict category blacklist verification - sub-millisecond check for all lanes.
+ */
+export function checkCategoryBlacklist(items = [], disallowedCategories = HIGH_RISK_CATEGORIES) {
+  for (const it of items) {
+    const cat = (it.category || '').toLowerCase();
+    if (disallowedCategories.some((dc) => cat.includes(dc))) {
+      return {
+        decision: 'deny',
+        reason: `restricted high-risk category detected: "${it.category}" (gift cards, crypto, prepaid cards, and gambling are strictly prohibited for autonomous agents)`,
+        ruleId: 'disallowed_category_blacklist',
+      };
+    }
+  }
+  return { decision: 'allow', reason: 'items cleared category blacklist', ruleId: 'disallowed_category_blacklist' };
+}
+
+/**
+ * Computes exact Jaccard similarity between two token sets: |A ∩ B| / |A ∪ B|
+ */
+export function calculateJaccardSimilarity(setA, setB) {
+  if (!setA || !setB || (setA.size === 0 && setB.size === 0)) return 1.0;
+  if (setA.size === 0 || setB.size === 0) return 0.0;
+  let intersectionSize = 0;
+  for (const item of setA) {
+    if (setB.has(item)) intersectionSize++;
+  }
+  const unionSize = new Set([...setA, ...setB]).size;
+  return unionSize > 0 ? intersectionSize / unionSize : 0;
+}
 
 export function checkSemanticCartInvariance({
   intentText = null,
   items = [],
   disallowedCategories = HIGH_RISK_CATEGORIES,
 } = {}) {
-  // 1. Strict blacklist on high-risk categories
-  for (const it of items) {
-    const cat = (it.category || '').toLowerCase();
-    if (disallowedCategories.some((dc) => cat.includes(dc))) {
-      return {
-        decision: 'deny',
-        reason: `restricted high-risk category detected: "${it.category}" (gift cards, crypto, and prepaid vouchers are strictly prohibited for autonomous agents)`,
-        ruleId: 'disallowed_category_blacklist',
-      };
-    }
+  // 1. Strict blacklist on high-risk categories (re-uses unified check)
+  const blacklistCheck = checkCategoryBlacklist(items, disallowedCategories);
+  if (blacklistCheck.decision === 'deny') {
+    return blacklistCheck;
   }
 
   // 2. Intent-to-Cart Token Similarity (Anti-Prompt Injection Drift)
@@ -77,22 +102,22 @@ export function checkSemanticCartInvariance({
 
     const intentTokens = new Set(cleanWords(intentText));
     const cartText = items.map((i) => `${i.sku} ${i.name || ''} ${i.category || ''}`).join(' ');
-    const cartTokens = cleanWords(cartText);
+    const cartTokens = new Set(cleanWords(cartText));
 
-    if (intentTokens.size > 0 && cartTokens.length > 0) {
+    if (intentTokens.size >= 2 && cartTokens.size > 0) {
+      const jaccard = calculateJaccardSimilarity(intentTokens, cartTokens);
       let matches = 0;
       for (const t of cartTokens) {
-        if (intentTokens.has(t) || Array.from(intentTokens).some((it) => it.includes(t) || t.includes(it))) {
-          matches++;
-        }
+        if (intentTokens.has(t)) matches++;
       }
 
-      // If there are specific intent keywords but zero overlap with cart items, flag intent drift
-      if (matches === 0 && intentTokens.size >= 2) {
+      // If user prompted with specific keywords but there is zero semantic overlap, flag intent drift
+      if (matches === 0 && jaccard === 0) {
         return {
           decision: 'pending',
-          reason: `semantic intent drift detected: cart items do not correlate with user prompt "${intentText}"`,
+          reason: `semantic intent drift detected: cart items do not correlate with user prompt "${intentText}" (Jaccard similarity: 0.00)`,
           ruleId: 'semantic_intent_drift',
+          jaccardSimilarity: 0,
         };
       }
     }
@@ -309,17 +334,66 @@ export function computeTieredRiskScore({
   };
 }
 
-export function decideGate(mandate, quoteTotal, isFirstTimeMerchant, riskEvaluation = null) {
-  const riskScore = typeof riskEvaluation === 'object' && riskEvaluation !== null ? riskEvaluation.riskScore : (typeof riskEvaluation === 'number' ? riskEvaluation : null);
+export function decideGate(mandate, quoteTotal, isFirstTimeMerchant, riskEvaluation = null, merchantRiskConfig = null) {
+  const riskScore = typeof riskEvaluation === 'object' && riskEvaluation !== null
+    ? riskEvaluation.riskScore
+    : (typeof riskEvaluation === 'number' ? riskEvaluation : null);
 
+  // Configurable Merchant Risk Appetite:
+  // - "conservative": deny > 60, review >= 25
+  // - "balanced" (default): deny > 70, review >= 35
+  // - "aggressive": deny > 85, review >= 50
+  // - custom thresholds if provided
+  let denyCeiling = 70;
+  let reviewFloor = 35;
+
+  if (merchantRiskConfig) {
+    if (merchantRiskConfig.denyThreshold !== undefined) {
+      denyCeiling = Number(merchantRiskConfig.denyThreshold);
+    } else if (merchantRiskConfig.riskTolerance === 'conservative') {
+      denyCeiling = 60;
+      reviewFloor = 25;
+    } else if (merchantRiskConfig.riskTolerance === 'aggressive') {
+      denyCeiling = 85;
+      reviewFloor = 50;
+    }
+
+    if (merchantRiskConfig.reviewThreshold !== undefined) {
+      reviewFloor = Number(merchantRiskConfig.reviewThreshold);
+    }
+  }
+
+  // Critical Risk Tier: triggers immediate denial
+  if (riskScore !== null && riskScore > denyCeiling) {
+    return {
+      decision: 'deny',
+      reason: `composite risk score ${riskScore}/100 exceeds merchant security ceiling (${denyCeiling}): elevated anomaly profile`,
+      ruleId: 'risk_tier_high_denial',
+      riskScore,
+    };
+  }
+
+  // Zero-trust invariant: First-time merchant always gates for human approval
   if (isFirstTimeMerchant) {
     return { decision: 'pending', reason: 'first transaction with this merchant requires human approval', ruleId: 'gate_first_time', riskScore: riskScore || 30 };
   }
+
+  // Spending cap threshold gating
   if (quoteTotal > mandate.autoApproveThreshold) {
     return { decision: 'pending', reason: `quote ₹${quoteTotal / 100} exceeds auto-approve threshold ₹${mandate.autoApproveThreshold / 100}`, ruleId: 'gate_threshold', riskScore: riskScore || 45 };
   }
 
-  return { decision: 'allow', reason: 'within auto-approve threshold', ruleId: 'gate_threshold', riskScore: riskScore || 15 };
+  // Elevated Risk Tier: requires human operator review
+  if (riskScore !== null && riskScore >= reviewFloor) {
+    return {
+      decision: 'pending',
+      reason: `composite risk score ${riskScore}/100 exceeds merchant auto-approval threshold (<${reviewFloor})`,
+      ruleId: 'risk_tier_medium_review',
+      riskScore,
+    };
+  }
+
+  return { decision: 'allow', reason: 'within auto-approve threshold and acceptable risk profile', ruleId: 'gate_threshold', riskScore: riskScore || 15 };
 }
 
 export function checkDiscountCeiling(originalTotal, discountPaise, maxDiscountPercent = 20) {

@@ -19,9 +19,19 @@ export function canonicalizeMandate(mandateData) {
   return JSON.stringify(sorted);
 }
 
-export function signMandate(mandateData, secretKey = process.env.ACM_MANDATE_SECRET || 'acm_ap2_mandate_secret_key') {
+export function getMandateSecret(providedSecret) {
+  if (providedSecret) return providedSecret;
+  if (process.env.ACM_MANDATE_SECRET) return process.env.ACM_MANDATE_SECRET;
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('SECURITY FATAL: ACM_MANDATE_SECRET environment variable must be explicitly configured in production');
+  }
+  return 'acm_ap2_mandate_secret_key';
+}
+
+export function signMandate(mandateData, secretKey = null) {
+  const secret = getMandateSecret(secretKey);
   const canonical = canonicalizeMandate(mandateData);
-  const signature = crypto.createHmac('sha256', secretKey).update(canonical).digest('hex');
+  const signature = crypto.createHmac('sha256', secret).update(canonical).digest('hex');
   return {
     payload: canonical,
     signature,
@@ -29,8 +39,9 @@ export function signMandate(mandateData, secretKey = process.env.ACM_MANDATE_SEC
   };
 }
 
-export function verifyMandate(signedPayloadStr, secretKey = process.env.ACM_MANDATE_SECRET || 'acm_ap2_mandate_secret_key') {
+export function verifyMandate(signedPayloadStr, secretKey = null) {
   try {
+    const secret = getMandateSecret(secretKey);
     const parsed = typeof signedPayloadStr === 'string' ? JSON.parse(signedPayloadStr) : signedPayloadStr;
     const { payload, signature } = parsed;
 
@@ -39,7 +50,7 @@ export function verifyMandate(signedPayloadStr, secretKey = process.env.ACM_MAND
     }
 
     const canonical = canonicalizeMandate(payload);
-    const expectedSig = crypto.createHmac('sha256', secretKey).update(canonical).digest('hex');
+    const expectedSig = crypto.createHmac('sha256', secret).update(canonical).digest('hex');
 
     const sigBuf = Buffer.from(signature);
     const expBuf = Buffer.from(expectedSig);
@@ -63,7 +74,8 @@ export function verifyMandate(signedPayloadStr, secretKey = process.env.ACM_MAND
 /**
  * Signs a user-authorized Proof of Authority (PoA) binding an agent to a specific intent statement & budget.
  */
-export function signUserIntentProof(intentData, userSecret = process.env.ACM_MANDATE_SECRET || 'acm_ap2_mandate_secret_key') {
+export function signUserIntentProof(intentData, userSecret = null) {
+  const secret = getMandateSecret(userSecret);
   const canonical = JSON.stringify({
     userId: intentData.userId || 'user-default',
     agentId: intentData.agentId,
@@ -73,7 +85,7 @@ export function signUserIntentProof(intentData, userSecret = process.env.ACM_MAN
     expiresAt: intentData.expiresAt || new Date(Date.now() + 30 * 60 * 1000).toISOString(),
     nonce: intentData.nonce || crypto.randomBytes(8).toString('hex'),
   });
-  const signature = crypto.createHmac('sha256', userSecret).update(canonical).digest('hex');
+  const signature = crypto.createHmac('sha256', secret).update(canonical).digest('hex');
   return {
     proof: JSON.parse(canonical),
     signature,
@@ -84,12 +96,20 @@ export function signUserIntentProof(intentData, userSecret = process.env.ACM_MAN
 /**
  * Cryptographically verifies that the user authorized this specific checkout scope before the agent hit the gateway.
  */
-export function verifyUserIntentProof(signedProofToken, { quoteTotal = 0, merchantId = null } = {}, userSecret = process.env.ACM_MANDATE_SECRET || 'acm_ap2_mandate_secret_key') {
+export function verifyUserIntentProof(
+  signedProofToken,
+  { quoteTotal = 0, merchantId = null, requireProof = false } = {},
+  userSecret = null
+) {
   if (!signedProofToken) {
+    if (requireProof) {
+      return { valid: false, decision: 'deny', reason: 'mandatory proof of authority token missing for this mandate', ruleId: 'proof_of_authority_required' };
+    }
     return { valid: true, decision: 'allow', reason: 'no intent proof attached (standard mandate path)' };
   }
 
   try {
+    const secret = getMandateSecret(userSecret);
     const raw = Buffer.from(signedProofToken, 'base64').toString('utf8');
     const { proof, signature } = JSON.parse(raw);
 
@@ -107,7 +127,7 @@ export function verifyUserIntentProof(signedProofToken, { quoteTotal = 0, mercha
       nonce: proof.nonce,
     });
 
-    const expectedSig = crypto.createHmac('sha256', userSecret).update(canonical).digest('hex');
+    const expectedSig = crypto.createHmac('sha256', secret).update(canonical).digest('hex');
     const sigBuf = Buffer.from(signature);
     const expBuf = Buffer.from(expectedSig);
 

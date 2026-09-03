@@ -34,6 +34,6 @@ A protocol-agnostic, zero-trust in-flight financial guardrail gateway between au
   - Measured +30.5% to +35% AOV lift via statistical co-purchase affinity mining.
   - Campaign discount ceilings (20% policy cap enforcement).
 - [x] **Live Testing & Verification**:
-  - 46/46 unit & integration tests passing in < 850ms.
+  - 65+ unit & integration tests passing across policy engine and API gateways.
   - Next.js Turbopack governance dashboard running at `http://localhost:3001`.
   - Fastify REST API running at `http://localhost:3000`.

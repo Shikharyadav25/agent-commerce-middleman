@@ -30,12 +30,13 @@ async function runGeminiSecurityAnalystTests() {
   if (!apiKey || apiKey === 'your_gemini_api_key_here') {
     console.log(`${YELLOW}⚠️  NOTE: No GEMINI_API_KEY detected in .env.${RESET}`);
     console.log(`   Running in ${BOLD}Deterministic Heuristic Fallback Mode${RESET}.`);
-    console.log(`   To test with live Google Gemini AI, set ${BOLD}GEMINI_API_KEY="your-key"${RESET} in .env or run:`);
-    console.log(`   ${CYAN}GEMINI_API_KEY=AIzaSy... npm run test:nlp${RESET}\n`);
+    console.log(`   To test with live Google Gemini AI, set ${BOLD}GEMINI_API_KEY="your-key"${RESET} in root .env or run:`);
+    console.log(`   ${CYAN}npm run test:nlp${RESET} (from repository root)`);
+    console.log(`   ${CYAN}node scripts/test-gemini-analyst.js${RESET}\n`);
   } else {
     const maskedKey = apiKey.slice(0, 8) + '...' + apiKey.slice(-4);
     console.log(`${GREEN}✅ Active GEMINI_API_KEY detected (${maskedKey}).${RESET}`);
-    console.log(`   Using Google Gemini Free Tier: ${BOLD}gemini-1.5-flash${RESET}\n`);
+    console.log(`   Using Google Gemini Free Tier: ${BOLD}gemini-3.1-flash-lite / gemini-2.5-flash${RESET}\n`);
   }
 
   // --------------------------------------------------------------------------

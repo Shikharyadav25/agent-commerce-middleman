@@ -14,6 +14,8 @@
  *    or non-deterministic 5% probabilistic spot-checks.
  */
 
+import { checkSmurfing, HIGH_RISK_CATEGORIES } from './rules.js';
+
 export const LANES = {
   EXPRESS_LANE: 'EXPRESS_LANE',
   DEEP_INSPECTION_LANE: 'DEEP_INSPECTION_LANE',
@@ -24,10 +26,30 @@ export const LANES = {
  * - Starts at baseline 60 for any active credential.
  * - Adds +5 points per successful paid transaction (max 100).
  * - Deducts -20 points per policy violation or suspicious trigger (min 0).
+ * 
+ * NOTE ON TRUST BOUNDARIES:
+ * Trust score is an agent reputation metric. However, per zero-trust security
+ * guarantees, an agent's trust score NEVER waives the mandatory gating check
+ * for first-time merchants (isFirstTimeMerchant). A high agent trust score allows
+ * routine commodity purchases with previously verified merchants in Express Lane,
+ * but first interactions with any new merchant strictly require human sign-off.
  */
 export function computeAgentTrustScore({ paidCount = 0, denialCount = 0 } = {}) {
   const score = 60 + (paidCount * 5) - (denialCount * 20);
   return Math.max(0, Math.min(100, score));
+}
+
+/**
+ * Deterministic pseudo-random fraction (0 to 1) based on FNV-1a hash of a seed string.
+ * Ensures auditability and reproducible demo/test runs without Math.random() flakes.
+ */
+export function computeDeterministicSample(seedString = '') {
+  let hash = 2166136261;
+  for (let i = 0; i < seedString.length; i++) {
+    hash ^= seedString.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 4294967296;
 }
 
 /**
@@ -41,8 +63,12 @@ export function selectTransactionSecurityLane({
   mandate = {},
   paidTransactionCount = 0,
   recentDenialCount = 0,
+  isFirstTimeMerchant = false,
+  recentTransactions = [],
   forceDeepInspection = false,
-  probabilisticSampleRate = 0.05, // 5% randomized spot-checks (TSA PreCheck model)
+  probabilisticSampleRate = (typeof process !== 'undefined' && process.env && (process.env.NODE_ENV === 'production' || process.env.ENABLE_PROBABILISTIC_SAMPLING === 'true')) ? 0.05 : 0,
+  sampleSeed = null,
+  randomFn = null,
 } = {}) {
   const trustScore = computeAgentTrustScore({
     paidCount: paidTransactionCount,
@@ -59,22 +85,37 @@ export function selectTransactionSecurityLane({
     };
   }
 
-  // 2. High-Risk / High-Liquidity Categories (electronics, vouchers, crypto, luxury, flights)
+  // 2. High-Risk / High-Liquidity Categories (electronics, vouchers, crypto, luxury, flights, gambling, prepaid cards)
   // Fraudsters target liquid, easily resold items; commodities (bread, milk, movie tickets) are low risk.
-  const isHighRiskCategory = Boolean(
-    (category || '').match(/electronics|hardware|crypto|giftcard|voucher|flight|luxury|jewelry/i)
+  const catLower = (category || '').toLowerCase();
+  const isBlacklistedCategory = HIGH_RISK_CATEGORIES.some((c) => catLower.includes(c));
+  const isHighRiskCategory = isBlacklistedCategory || Boolean(
+    catLower.match(/electronics|hardware|crypto|giftcard|voucher|prepaid|card|flight|luxury|jewelry|gambling/i)
   );
 
   if (isHighRiskCategory) {
     return {
       lane: LANES.DEEP_INSPECTION_LANE,
-      reason: `High-liquidity category [${category || 'restricted'}] requires full 6-layer verification`,
+      reason: isBlacklistedCategory
+        ? `High-liquidity category [${category || 'restricted'} - blacklisted] requires full 6-layer verification`
+        : `High-liquidity category [${category || 'restricted'}] requires full 6-layer verification`,
       trustScore,
       isSampled: false,
     };
   }
 
-  // 3. Untrusted or Brand-New Agents (Trust Score < 70 or < 2 completed transactions)
+  // 3. First-Time Merchant Boundary (Zero-Trust Invariant)
+  // Even an agent with 100/100 trust MUST gate when interacting with an unvetted merchant for the first time.
+  if (isFirstTimeMerchant) {
+    return {
+      lane: LANES.DEEP_INSPECTION_LANE,
+      reason: 'First-time merchant requires human sign-off verification',
+      trustScore,
+      isSampled: false,
+    };
+  }
+
+  // 4. Untrusted or Brand-New Agents (Trust Score < 70 or < 2 completed transactions)
   if (trustScore < 70 || paidTransactionCount < 2) {
     return {
       lane: LANES.DEEP_INSPECTION_LANE,
@@ -84,7 +125,7 @@ export function selectTransactionSecurityLane({
     };
   }
 
-  // 4. Above Auto-Approve Threshold
+  // 5. Above Auto-Approve Threshold
   if (mandate.autoApproveThreshold && quoteTotal > mandate.autoApproveThreshold) {
     return {
       lane: LANES.DEEP_INSPECTION_LANE,
@@ -94,18 +135,44 @@ export function selectTransactionSecurityLane({
     };
   }
 
-  // 5. Probabilistic Spot-Check (5% randomized audit)
-  // Prevents malicious agents from reverse-engineering fixed thresholds.
-  if (Math.random() < probabilisticSampleRate) {
-    return {
-      lane: LANES.DEEP_INSPECTION_LANE,
-      reason: 'Probabilistic security spot-check (5% non-deterministic audit)',
-      trustScore,
-      isSampled: true,
-    };
+  // 6. Anti-Smurfing Structuring Check
+  // Flag transaction bursts clustering at 88-100% of auto-approve threshold before Express routing
+  if (mandate?.autoApproveThreshold) {
+    const smurfingCandidates = [
+      { quote: { total: quoteTotal }, amount: quoteTotal },
+      ...(Array.isArray(recentTransactions) ? recentTransactions : []),
+    ];
+    const smurfingCheck = checkSmurfing({
+      recentTransactions: smurfingCandidates,
+      autoApproveThreshold: mandate.autoApproveThreshold,
+      minClusterSize: 3,
+    });
+    if (smurfingCheck.decision === 'pending') {
+      return {
+        lane: LANES.DEEP_INSPECTION_LANE,
+        reason: `Anti-smurfing structuring pattern detected: requires deep inspection (${smurfingCheck.reason})`,
+        trustScore,
+        isSampled: false,
+      };
+    }
   }
 
-  // 6. Routine, High-Trust, Low-Risk Transaction -> EXPRESS LANE!
+  // 7. Probabilistic Spot-Check (Randomized audit / TSA PreCheck model)
+  // Uses deterministic seeded PRNG for reproducible audits unless custom randomFn is passed.
+  if (probabilisticSampleRate > 0) {
+    const seed = sampleSeed || `${agent.id || 'agent'}:${merchantId || 'merchant'}:${category || 'cat'}:${quoteTotal}`;
+    const sampleValue = typeof randomFn === 'function' ? randomFn() : computeDeterministicSample(seed);
+    if (sampleValue < probabilisticSampleRate) {
+      return {
+        lane: LANES.DEEP_INSPECTION_LANE,
+        reason: `Probabilistic security spot-check (${(probabilisticSampleRate * 100).toFixed(0)}% audit)`,
+        trustScore,
+        isSampled: true,
+      };
+    }
+  }
+
+  // 8. Routine, High-Trust, Low-Risk Transaction -> EXPRESS LANE!
   return {
     lane: LANES.EXPRESS_LANE,
     reason: `Express Highway: High-trust agent (${trustScore}/100) purchasing routine low-risk category`,

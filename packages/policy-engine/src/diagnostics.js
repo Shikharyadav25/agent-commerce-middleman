@@ -226,16 +226,18 @@ export function generateNLPDiagnosticReport({
         agentActionableInstructions = `Reduce order quantity or choose a lower-priced alternative. The order exceeds the per-transaction limit by ₹${excess.toFixed(2)}. Alternatively, request human operator sign-off.`;
         
         // Calculate safe quantity if single item
-        let safeQty = 1;
+        let safeQty = null;
+        let suggestedTotalPaise = mandate?.maxPerTransaction || quoteTotal;
         if (items.length === 1 && items[0].unitPrice) {
           safeQty = Math.max(1, Math.floor(mandate.maxPerTransaction / items[0].unitPrice));
+          suggestedTotalPaise = safeQty * items[0].unitPrice;
         }
 
         suggestedRemediation = {
           action: 'adjust_quantity_or_items',
           maxPermittedTotal: perTxnLimit,
-          suggestedQuantity: safeQty,
-          suggestedTotalPaise: safeQty * (items[0]?.unitPrice || quoteTotal),
+          ...(safeQty !== null ? { suggestedQuantity: safeQty } : {}),
+          suggestedTotalPaise,
         };
       } else if (ruleId === 'daily_cap') {
         forensicSummary = `Daily Budget Ceiling Reached: This purchase would exceed the agent's rolling 24-hour spending limit.`;

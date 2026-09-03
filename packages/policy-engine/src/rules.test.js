@@ -199,3 +199,39 @@ test('Layer 6: circuit breaker trips after repeated policy violations', () => {
   assert.equal(result.decision, 'deny');
   assert.ok(result.reason.includes('autonomous circuit breaker tripped'));
 });
+
+// =========================================================================
+// 🎛️ LAYER 7: Configurable Merchant Risk Appetite Profiles
+// =========================================================================
+test('Merchant Risk Appetite: Conservative profile denies when riskScore > 60', () => {
+  const mandate = { autoApproveThreshold: 10000 };
+  const conservativeConfig = { riskTolerance: 'conservative' };
+
+  // Score 65 is under default 70, but exceeds conservative ceiling 60
+  const result = decideGate(mandate, 5000, false, { riskScore: 65 }, conservativeConfig);
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.ruleId, 'risk_tier_high_denial');
+  assert.ok(result.reason.includes('security ceiling (60)'));
+});
+
+test('Merchant Risk Appetite: Aggressive profile allows moderate risk (< 50) without hold', () => {
+  const mandate = { autoApproveThreshold: 10000 };
+  const aggressiveConfig = { riskTolerance: 'aggressive' };
+
+  // Score 40 gates under balanced review floor (35), but passes under aggressive floor (50)
+  const result = decideGate(mandate, 5000, false, { riskScore: 40 }, aggressiveConfig);
+  assert.equal(result.decision, 'allow');
+});
+
+test('Merchant Risk Appetite: Custom thresholds are strictly enforced', () => {
+  const mandate = { autoApproveThreshold: 10000 };
+  const customConfig = { denyThreshold: 80, reviewThreshold: 45 };
+
+  const reviewResult = decideGate(mandate, 5000, false, { riskScore: 48 }, customConfig);
+  assert.equal(reviewResult.decision, 'pending');
+  assert.equal(reviewResult.ruleId, 'risk_tier_medium_review');
+
+  const denyResult = decideGate(mandate, 5000, false, { riskScore: 82 }, customConfig);
+  assert.equal(denyResult.decision, 'deny');
+  assert.equal(denyResult.ruleId, 'risk_tier_high_denial');
+});
