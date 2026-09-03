@@ -55,10 +55,13 @@ export const HIGH_RISK_CATEGORIES = ['vouchers.giftcards', 'crypto.currency', 'p
 export function checkCategoryBlacklist(items = [], disallowedCategories = HIGH_RISK_CATEGORIES) {
   for (const it of items) {
     const cat = (it.category || '').toLowerCase();
-    if (disallowedCategories.some((dc) => cat.includes(dc))) {
+    const skuLower = (it.sku || '').toLowerCase();
+    const isRestrictedCat = disallowedCategories.some((dc) => cat.includes(dc));
+    const isRestrictedSku = ['giftcard', 'gift-card', 'voucher', 'crypto', 'gambling'].some((w) => skuLower.includes(w));
+    if (isRestrictedCat || isRestrictedSku) {
       return {
         decision: 'deny',
-        reason: `restricted high-risk category detected: "${it.category}" (gift cards, crypto, prepaid cards, and gambling are strictly prohibited for autonomous agents)`,
+        reason: `restricted high-risk category detected: "${it.category || it.sku}" (gift cards, crypto, prepaid cards, and gambling are strictly prohibited for autonomous agents)`,
         ruleId: 'disallowed_category_blacklist',
       };
     }

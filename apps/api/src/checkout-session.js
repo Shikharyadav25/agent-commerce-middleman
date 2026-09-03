@@ -68,7 +68,30 @@ export async function addItemToSession(sessionId, { sku, qty = 1 }) {
     throw new Error('Cannot modify a completed checkout session');
   }
 
-  // 1. Fetch product from catalog
+  // 1. Pre-flight Fast-fail: Canary Honeytoken Trap & Category Blacklist (Intercepts rogue bots before DB query)
+  const canaryCheck = checkCanarySKUs([{ sku }]);
+  if (canaryCheck.decision === 'deny') {
+    return {
+      success: false,
+      blocked: true,
+      reason: canaryCheck.reason,
+      ruleId: canaryCheck.ruleId,
+      session,
+    };
+  }
+
+  const fastCategoryCheck = checkCategoryBlacklist([{ sku }]);
+  if (fastCategoryCheck.decision === 'deny') {
+    return {
+      success: false,
+      blocked: true,
+      reason: fastCategoryCheck.reason,
+      ruleId: fastCategoryCheck.ruleId,
+      session,
+    };
+  }
+
+  // 2. Fetch product from catalog
   const product = await prisma.product.findFirst({
     where: { sku },
     include: { merchant: true },
@@ -86,17 +109,6 @@ export async function addItemToSession(sessionId, { sku, qty = 1 }) {
       blocked: true,
       reason: categoryCheck.reason,
       ruleId: categoryCheck.ruleId,
-      session,
-    };
-  }
-
-  const canaryCheck = checkCanarySKUs([{ sku }]);
-  if (canaryCheck.decision === 'deny') {
-    return {
-      success: false,
-      blocked: true,
-      reason: canaryCheck.reason,
-      ruleId: canaryCheck.ruleId,
       session,
     };
   }
