@@ -333,5 +333,51 @@ server.tool(
   }
 );
 
+server.tool(
+  'start_conversational_checkout',
+  'Initialize a multi-turn conversational checkout session with real-time policy pre-flight validation and dynamic bandit cross-sells',
+  {
+    merchantId: z.string().optional().describe('Merchant ID (defaults to primary merchant)'),
+  },
+  async ({ merchantId }) => {
+    return await safeFetch(`${API_BASE}/v1/checkout/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId: AGENT_ID, agentName: AGENT_NAME, merchantId }),
+    });
+  }
+);
+
+server.tool(
+  'add_item_to_checkout',
+  'Add an item incrementally to an ongoing conversational checkout session. Runs instant category blacklist, canary checks, and returns real-time Multi-Armed Bandit add-ons',
+  {
+    sessionId: z.string().describe('Active checkout session ID (cs_...)'),
+    sku: z.string().describe('Product SKU to add'),
+    quantity: z.number().default(1).describe('Quantity of item'),
+  },
+  async ({ sessionId, sku, quantity = 1 }) => {
+    return await safeFetch(`${API_BASE}/v1/checkout/sessions/${sessionId}/items`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sku, qty: quantity }),
+    });
+  }
+);
+
+server.tool(
+  'complete_conversational_checkout',
+  'Finalize conversational checkout session, run policy checks, and generate the Razorpay Order & Payment link',
+  {
+    sessionId: z.string().describe('Active checkout session ID (cs_...)'),
+  },
+  async ({ sessionId }) => {
+    return await safeFetch(`${API_BASE}/v1/checkout/sessions/${sessionId}/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
